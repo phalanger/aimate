@@ -116,8 +116,10 @@
         "0.4"
       ],
       "cwd": "{root}",
+      "_env_offline": "HF_HUB_OFFLINE=1 让 transformers 直接用本地缓存，不去 huggingface.co 查更新。模型下载好之后那些请求纯属多余，而且从终端启动时它们走的是会话里的代理、双击 exe 启动时没有代理，会一路超时重试到语音服务起不来。第一次下载模型时把它改成 0。",
       "env": {
         "HF_HUB_ENABLE_HF_TRANSFER": "0",
+        "HF_HUB_OFFLINE": "1",
         "NO_PROXY": "{no_proxy}",
         "no_proxy": "{no_proxy}"
       },

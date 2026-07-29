@@ -42,7 +42,11 @@ const PANEL_URL: &str = "http://127.0.0.1:8900/";
 // and MuseTalk restores its cached avatars. The panel itself is up long before
 // that, and the panel is all this waits for - the page shows its own status
 // for the rest.
-const READY_TIMEOUT: Duration = Duration::from_secs(90);
+// Whisper and the TTS have to reach the GPU before a conversation can start,
+// and MuseTalk restores its cached avatars. The window waits for all of it
+// rather than appearing early: a panel that is visible but cannot connect
+// invites clicking things that then fail, which reads as a broken install.
+const READY_TIMEOUT: Duration = Duration::from_secs(600);
 
 // This is a GUI process, so every console program it starts would otherwise
 // be given a console window of its own - one flashing up for the supervisor
@@ -51,6 +55,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug)]
 enum UserEvent {
+    /// Startup progress, as JSON, to render on the loading screen.
+    Progress(String),
     Ready,
     Failed,
 }
@@ -69,23 +75,65 @@ window.addEventListener('keydown', function (event) {
 });
 "#;
 
-fn splash(message: &str, detail: &str) -> String {
+// `labels` carries the per-state marks and the "optional" tag as JSON. They
+// come from web/i18n.json for the same reason the headings do: this file stays
+// ASCII-only, and the shell should not word things differently from the page.
+fn splash(message: &str, detail: &str, labels: &str) -> String {
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><style>
         html,body{{height:100%;margin:0}}
         body{{display:flex;align-items:center;justify-content:center;
           background:#0e0f13;color:#e9e9ee;
           font-family:"Microsoft YaHei",system-ui,sans-serif}}
-        .box{{text-align:center;max-width:32em;padding:0 2em}}
+        .box{{width:22em;padding:0 2em}}
         .dot{{width:9px;height:9px;margin:0 auto 18px;border-radius:50%;
           background:#e8a598;animation:p 1.1s ease-in-out infinite}}
         @keyframes p{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}
-        h1{{margin:0 0 10px;font-size:16px;font-weight:500}}
-        p{{margin:0;font-size:13px;line-height:1.7;color:#9a9aa6;white-space:pre-wrap}}
+        h1{{margin:0 0 10px;font-size:16px;font-weight:500;text-align:center}}
+        p{{margin:0;font-size:13px;line-height:1.7;color:#9a9aa6;
+          white-space:pre-wrap;text-align:center}}
+        ul{{list-style:none;margin:22px 0 0;padding:0}}
+        li{{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13px;
+          color:#9a9aa6;border-bottom:1px solid rgba(255,255,255,.05)}}
+        li:last-child{{border-bottom:none}}
+        .mark{{flex:none;width:1.2em;text-align:center}}
+        li[data-state="ready"]{{color:#e9e9ee}}
+        li[data-state="ready"] .mark{{color:#6fbf8f}}
+        li[data-state="starting"] .mark{{color:#d9c07a}}
+        li[data-state="failed"]{{color:#e88b8b}}
+        li[data-state="failed"] .mark{{color:#e88b8b}}
+        .opt{{margin-left:auto;font-size:11px;opacity:.6}}
         </style></head><body><div class="box">
-        <div class="dot"></div><h1>{}</h1><p>{}</p>
-        </div></body></html>"#,
-        message, detail
+        <div class="dot"></div><h1>{}</h1><p>{}</p><ul id="svc"></ul>
+        </div>
+        <script>
+        var LABELS = {};
+        var MARKS = LABELS.marks || {{}};
+        window.setProgress = function (payload) {{
+          var list = document.getElementById("svc");
+          if (!list) return;
+          list.textContent = "";
+          (payload.services || []).forEach(function (service) {{
+            var row = document.createElement("li");
+            row.dataset.state = service.state;
+            var mark = document.createElement("span");
+            mark.className = "mark";
+            mark.textContent = MARKS[service.state] || MARKS.waiting || "";
+            var name = document.createElement("span");
+            name.textContent = service.label;
+            row.appendChild(mark);
+            row.appendChild(name);
+            if (service.optional && LABELS.optional) {{
+              var tag = document.createElement("span");
+              tag.className = "opt";
+              tag.textContent = LABELS.optional;
+              row.appendChild(tag);
+            }}
+            list.appendChild(row);
+          }});
+        }};
+        </script></body></html>"#,
+        message, detail, labels
     )
 }
 
@@ -145,6 +193,10 @@ fn port_open(port: u16) -> bool {
 fn start_supervisor(root: &Path, python: &str) -> io::Result<Child> {
     let logs = root.join("var").join("logs");
     std::fs::create_dir_all(&logs)?;
+    // Last run's file still says done. Removing it before the supervisor
+    // starts means the loading screen cannot briefly read a finished startup
+    // that has not begun.
+    let _ = std::fs::remove_file(root.join("var").join("run").join("status.json"));
     // The shell has no console, so the supervisor's merged output would go
     // nowhere. It is the first place to look when a service will not start.
     let log = File::create(logs.join("shell.log"))?;
@@ -225,6 +277,17 @@ fn main() -> wry::Result<()> {
     let mut context = WebContext::new(Some(root.join("var").join("webview2")));
 
     let text = Text::load(&root);
+    let labels = serde_json::json!({
+        "optional": text.get("shell_optional", "optional"),
+        "marks": {
+            "ready": text.get("shell_mark_ready", "ok"),
+            "starting": text.get("shell_mark_starting", "..."),
+            "failed": text.get("shell_mark_failed", "x"),
+            "waiting": text.get("shell_mark_waiting", "-"),
+        }
+    })
+    .to_string();
+
     let webview = WebViewBuilder::new_with_web_context(&mut context)
         .with_html(splash(
             text.get("shell_starting", "Starting"),
@@ -232,21 +295,49 @@ fn main() -> wry::Result<()> {
                 "shell_starting_detail",
                 "Loading the speech models onto the GPU takes about a minute the first time.",
             ),
+            &labels,
         ))
         .with_initialization_script(SHORTCUTS)
         // F12 opens the inspector; the panel is edited while it runs.
         .with_devtools(true)
         .build(&window)?;
 
-    // Polled on a thread so the window paints while the services come up.
+    // Polled on a thread so the window paints while the services come up. The
+    // supervisor publishes what it is doing; waiting on that rather than on
+    // the panel's port alone is what lets the loading screen name the service
+    // still being waited for, and know which ones were skipped.
+    let status_file = root.join("var").join("run").join("status.json");
+    // Nothing was spawned, so nothing is going to publish progress: the
+    // services were already running and were adopted.
+    let adopted = child.is_none();
     std::thread::spawn(move || {
+        if adopted {
+            let _ = proxy.send_event(UserEvent::Ready);
+            return;
+        }
         let deadline = Instant::now() + READY_TIMEOUT;
+        let mut last = String::new();
         while Instant::now() < deadline {
-            if port_open(PANEL_PORT) {
-                let _ = proxy.send_event(UserEvent::Ready);
-                return;
+            if let Ok(text) = std::fs::read_to_string(&status_file) {
+                if text != last {
+                    last = text.clone();
+                    let _ = proxy.send_event(UserEvent::Progress(text.clone()));
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if value.get("done").and_then(|v| v.as_bool()) == Some(true) {
+                        // Startup finished. Whether every optional service made
+                        // it is the panel's business to show; the window opens
+                        // either way, as long as the panel is actually serving.
+                        if port_open(PANEL_PORT) {
+                            let _ = proxy.send_event(UserEvent::Ready);
+                        } else {
+                            let _ = proxy.send_event(UserEvent::Failed);
+                        }
+                        return;
+                    }
+                }
             }
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(400));
         }
         let _ = proxy.send_event(UserEvent::Failed);
     });
@@ -254,6 +345,11 @@ fn main() -> wry::Result<()> {
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
+            Event::UserEvent(UserEvent::Progress(payload)) => {
+                let _ = webview.evaluate_script(&format!(
+                    "window.setProgress && window.setProgress({payload})"
+                ));
+            }
             Event::UserEvent(UserEvent::Ready) => {
                 let _ = webview.load_url(PANEL_URL);
             }
@@ -264,6 +360,7 @@ fn main() -> wry::Result<()> {
                         "shell_failed_detail",
                         "The panel did not come up in time. See var\\logs\\shell.log.",
                     ),
+                    &labels,
                 );
                 let _ = webview.load_html(&html);
             }

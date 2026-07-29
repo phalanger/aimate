@@ -91,9 +91,12 @@ function setStatus(key, tone) {
   }
 }
 
-function showError(messageKey, withRetry) {
+// The retry button means different things depending on what failed, so the
+// action is attached alongside the message rather than wired once at startup.
+function showError(messageKey, retryAction) {
   el("error").textContent = t(messageKey);
-  el("error-retry").hidden = !withRetry;
+  state.retryAction = retryAction || null;
+  el("error-retry").hidden = !retryAction;
   el("error-box").hidden = false;
 }
 
@@ -119,7 +122,7 @@ async function retryRenderer() {
       const response = await fetch("/api/musetalk/status", { cache: "no-store" });
       const data = await response.json();
       if (!data.up) {
-        showError("retry_failed", true);
+        showError("retry_failed", retryRenderer);
         return;
       }
     }
@@ -128,7 +131,7 @@ async function retryRenderer() {
       await state.stage.setCharacter(character);
     }
   } catch (err) {
-    showError("retry_failed", true);
+    showError("retry_failed", retryRenderer);
   } finally {
     button.disabled = false;
   }
@@ -157,6 +160,44 @@ function showNotice(key) {
   const node = el("notice");
   node.textContent = t(key);
   node.hidden = false;
+}
+
+// The panel is serving within seconds of launch; the voice pipeline needs a
+// minute or two to put Whisper and the TTS on the GPU. The window appears in
+// between, so without this the Connect button is a trap - pressing it during
+// that gap fails in a way that reads as a broken install.
+//
+// Polled rather than pushed: the pipeline is a separate process that knows
+// nothing about this page, and a port either accepts a connection or it does
+// not.
+function watchServices() {
+  const button = el("connect");
+
+  const apply = (up) => {
+    if (state.connected) {
+      return;
+    }
+    button.disabled = !up;
+    button.textContent = up ? t("connect") : t("voice_starting");
+  };
+
+  const poll = async () => {
+    let up = false;
+    try {
+      const response = await fetch("/api/services", { cache: "no-store" });
+      up = !!(await response.json()).voice;
+    } catch (err) {
+      // The panel itself is unreachable; nothing useful to report from here.
+    }
+    apply(up);
+    // Stop once it is up. It going away later surfaces as a connection error,
+    // which is the right place for it.
+    if (!up) {
+      setTimeout(poll, 2000);
+    }
+  };
+
+  poll();
 }
 
 // Length of a cached reply, from the size of its audio rather than by timing
@@ -464,12 +505,37 @@ async function reloadCharacters(activeId) {
   selectCharacter(state.characterId);
 }
 
+// Remembered server-side rather than in the browser: "default" is already the
+// field that says which character to open with, and keeping it there means the
+// choice survives a cleared cache and holds for a phone on the same network
+// too. Debounced, since clicking through the list would otherwise be one write
+// per click.
+function rememberCharacter(id) {
+  if (!state.config || state.config.default === id) {
+    return;
+  }
+  state.config.default = id;
+  clearTimeout(state.defaultSaveTimer);
+  state.defaultSaveTimer = setTimeout(async () => {
+    try {
+      await fetch("/api/characters", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state.config),
+      });
+    } catch (err) {
+      // The selection still applies for this session; only persistence failed.
+    }
+  }, 800);
+}
+
 function selectCharacter(id) {
   const character = state.config.characters[id];
   if (!character) {
     return;
   }
   state.characterId = id;
+  rememberCharacter(id);
   renderCharacterList();
   el("character-name").textContent = character.label;
 
@@ -716,7 +782,7 @@ async function connect() {
   try {
     await client.connect();
   } catch (err) {
-    showError("err_connect");
+    showError("err_connect", connect);
     setStatus("status_error", "error");
     await state.audio.stop();
     return;
@@ -800,7 +866,7 @@ async function main() {
     // showing the idle loop is indistinguishable from working correctly.
     onRendererStatus: (reason) => {
       const unreachable = reason === "service_unreachable" || reason === "service_closed";
-      showError(unreachable ? "err_mt_service" : reason, unreachable);
+      showError(unreachable ? "err_mt_service" : reason, unreachable ? retryRenderer : null);
       // A renderer that failed will never signal the picture is ready, so
       // stop waiting for it rather than losing the audio entirely.
       clearTimeout(state.releaseTimer);
@@ -912,7 +978,11 @@ async function main() {
     state.llm.prepare();
     state.settings.open("llm");
   });
-  el("error-retry").addEventListener("click", () => retryRenderer());
+  el("error-retry").addEventListener("click", () => {
+    if (state.retryAction) {
+      state.retryAction();
+    }
+  });
 
   el("compose").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -927,6 +997,9 @@ async function main() {
   });
 
   setupCollapse();
+  // Opened in a browser the services may still be coming up; the desktop
+  // shell has already waited for them, in which case this settles at once.
+  watchServices();
   setStatus("status_idle", "idle");
 }
 

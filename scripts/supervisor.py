@@ -42,6 +42,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CONFIG = os.path.join(HERE, "services.json")
 LOG_DIR = os.path.join(ROOT, "var", "logs")
+# Startup progress, for the desktop shell's loading screen. A file rather than
+# a port because it has to be readable before anything is listening, and the
+# shell needs to know which services were skipped - only the supervisor knows
+# that.
+STATUS_FILE = os.path.join(ROOT, "var", "run", "status.json")
 
 # A service that dies more often than this is not going to be fixed by trying
 # again; it needs a human to read the log.
@@ -270,6 +275,44 @@ class Supervisor:
         if not os.path.isdir(LOG_DIR):
             os.makedirs(LOG_DIR)
 
+        # Only the services actually selected appear, so a run with
+        # --skip lipsync does not leave the shell waiting for something that
+        # was never going to start.
+        self.progress = {service.id: "waiting" for service in services}
+        self.done = False
+        self._write_status()
+
+    def _write_status(self):
+        try:
+            folder = os.path.dirname(STATUS_FILE)
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
+            payload = {
+                "done": self.done,
+                "services": [
+                    {
+                        "id": service.id,
+                        "label": service.label,
+                        "optional": service.optional or not service.managed,
+                        "state": self.progress.get(service.id, "waiting"),
+                    }
+                    for service in self.services
+                ],
+            }
+            temp = STATUS_FILE + ".tmp"
+            with open(temp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False)
+            # Replaced atomically: the shell polls this file several times a
+            # second and must never read a half-written one.
+            os.replace(temp, STATUS_FILE)
+        except Exception:
+            # Progress reporting is not worth failing a startup over.
+            pass
+
+    def mark(self, service, state):
+        self.progress[service.id] = state
+        self._write_status()
+
     def say(self, service, message, colour=None):
         line = (service.tag() + " " if service else "") + paint(message, colour)
         with self.lock:
@@ -386,34 +429,51 @@ class Supervisor:
                 other = self.by_id.get(need)
                 if other and other.managed and (not other.process or other.process.poll() is not None):
                     self.say(service, "skipped: %s is not running" % need, "91")
+                    self.mark(service, "failed")
                     if not service.optional:
                         return False
 
             if not service.managed:
-                state = "up" if probe(service.ready) else "not running"
-                colour = "32" if state == "up" else "33"
+                up = probe(service.ready)
+                state = "up" if up else "not running"
+                colour = "32" if up else "33"
                 self.say(service, "%s (external) - %s" % (service.label, state), colour)
-                if state != "up" and service.note:
+                if not up and service.note:
                     self.say(service, service.note, "90")
+                self.mark(service, "ready" if up else "failed")
                 continue
 
             if probe(service.ready) and service.ready.get("type") != "none":
                 self.say(service, "%s already running, adopting it" % service.label, "32")
+                self.mark(service, "ready")
                 continue
 
             self.say(service, "starting %s ..." % service.label, "36")
+            self.mark(service, "starting")
             if not self.spawn(service):
+                self.mark(service, "failed")
                 if service.optional:
                     continue
                 return False
 
             if self.wait_ready(service):
                 self.say(service, "ready", "32")
+                self.mark(service, "ready")
             else:
                 self.say(service, "did not become ready in %.0fs" % service.ready_timeout, "91")
+                self.mark(service, "failed")
                 if not service.optional:
                     return False
         return True
+
+    def finish_startup(self, ok):
+        """Startup is over - the shell can stop waiting either way."""
+        self.done = True
+        if not ok:
+            for service in self.services:
+                if self.progress.get(service.id) in ("waiting", "starting"):
+                    self.progress[service.id] = "failed"
+        self._write_status()
 
     def watch(self, restart=True, parent_pid=0):
         """Keep an eye on the children until Ctrl+C or nothing is left alive."""
@@ -549,6 +609,7 @@ def main():
     started = False
     try:
         started = supervisor.start_all()
+        supervisor.finish_startup(started)
         if started:
             supervisor.say(None, "", None)
             supervisor.say(None, "  Open http://127.0.0.1:%s/" % port, "32")

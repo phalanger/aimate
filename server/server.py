@@ -520,6 +520,8 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         elif route == "/api/settings":
             with open(PATHS.settings, "r", encoding="utf-8") as handle:
                 self._send_json(json.load(handle))
+        elif route == "/api/services":
+            self._send_json(self._service_status())
         elif route == "/api/musetalk/status":
             self._musetalk_status()
         elif route == "/api/llm/models":
@@ -760,6 +762,26 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         os.replace(temp, PATHS.settings)
 
         self._send_json({"ok": True, "applied": applied, "settings": data})
+
+    def _service_status(self):
+        """Which back ends are listening yet.
+
+        The panel answers within seconds of launch while the voice pipeline
+        spends a minute or two putting Whisper and the TTS on the GPU, and the
+        window is shown in between. Without this the page offers a Connect
+        button during that gap, and pressing it produces a connection error
+        that looks like a broken install rather than "not up yet".
+        """
+        import socket
+
+        def listening(port):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.4):
+                    return True
+            except OSError:
+                return False
+
+        return {"voice": listening(8765), "lipsync": listening(8930)}
 
     def _musetalk_status(self):
         """Whether the lip-sync service is up, so the panel can say so."""
