@@ -76,13 +76,19 @@ body {
 }
 
 /* Both video layers are stacked and always playing; only opacity switches, so
-   the swap between idle and talking has no decode stall. */
+   the swap between idle and talking has no decode stall.
+
+   The fit is a setting because it depends on the footage: a clip shot to fill
+   the window wants cover, but a square source (512x512 is what most talking-
+   head generators produce) gets its top and bottom cropped away by it, and
+   the head is usually what goes. Default is contain - it never hides part of
+   the picture. */
 .stage-video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: var(--video-fit, contain);
   transition: opacity 0.35s ease;
 }
 

@@ -177,7 +177,12 @@ export class Subtitles {
     return !!setting("subtitle_show", true);
   }
 
-  // Called when the reply text arrives, which is while she is still speaking.
+  // Called when the reply text arrives. Nothing is shown yet: the transcript
+  // can land well before the first sample leaves the speaker - with a
+  // generated picture the audio is held until the frames exist - and a line on
+  // screen in silence reads as a caption for a reply that has not begun. The
+  // first setElapsed puts it up, and that only happens once audio is playing.
+  //
   // The duration is a guess at this point; setTotal corrects it.
   begin(text) {
     this.clear();
@@ -192,7 +197,6 @@ export class Subtitles {
     this.cues = cues;
     this.active = true;
     this.applyStyle();
-    this.setElapsed(0);
   }
 
   // The reply turned out to be this long. Re-timing keeps the last cue from

@@ -387,6 +387,13 @@ function addTranscript(speaker, text) {
   list.scrollTop = list.scrollHeight;
 }
 
+// Published as a custom property rather than set on each video element: both
+// real-person renderers stack two of them, and they are created and destroyed
+// on every character switch.
+function applyVideoFit() {
+  document.documentElement.style.setProperty("--video-fit", setting("video_fit", "contain"));
+}
+
 function currentCharacter() {
   if (!state.config || !state.characterId) {
     return null;
@@ -669,12 +676,15 @@ async function connect() {
   state.audio.onPosition = (played, active) => {
     state.stage.setAudioPosition(played, active);
 
-    // Subtitles are timed against samples actually played, the same clock the
-    // generated picture uses. A timer of its own would drift apart from both.
-    if (state.replyBase === null && (state.speaking || state.replaying)) {
-      state.replyBase = played;
-    }
-    if (state.replyBase !== null) {
+    // Subtitles follow the voice, not the transcript event. The text arrives
+    // while the speaker may still be held waiting for the picture, and a line
+    // sitting on screen in silence belongs to a reply that has not started.
+    // Gating on "audio is actually leaving the speaker" also makes this the
+    // same clock the generated picture runs on, so the two cannot drift.
+    if (active) {
+      if (state.replyBase === null) {
+        state.replyBase = played;
+      }
       state.subtitles.setElapsed((played - state.replyBase) / PIPELINE_SAMPLE_RATE);
     }
 
@@ -840,6 +850,8 @@ async function main() {
     // Defaults in the code cover a missing settings.json.
   }
 
+  applyVideoFit();
+
   // After the settings load: the subtitle styling is read straight out of
   // them at construction.
   state.subtitles = new Subtitles(el("subtitle"), el("stage"));
@@ -867,6 +879,9 @@ async function main() {
     onChange: (key) => {
       if (key.indexOf("subtitle_") === 0) {
         state.subtitles.applyStyle();
+      }
+      if (key === "video_fit") {
+        applyVideoFit();
       }
     },
   });

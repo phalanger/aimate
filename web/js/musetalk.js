@@ -267,11 +267,22 @@ export class MuseTalkStage {
 
     // Read per turn rather than captured at load: changing the switch in
     // settings then takes effect on the next reply.
-    let go;
-    if (setting("wait_for_complete_turn", WAIT_FOR_COMPLETE_TURN)) {
-      go = this.turnComplete || decoded >= setting("max_wait_seconds", MAX_WAIT_SECONDS) * this.fps;
-    } else {
-      go = decoded >= this._leadFrames();
+    // A finished turn releases playback in either mode. The head start only
+    // exists to stay ahead of generation that is still running; once the
+    // service has flushed, there is nothing left to stay ahead of.
+    //
+    // Without this, a reply shorter than lead_seconds never reaches the
+    // threshold and the speaker is held until the release timeout - which
+    // reads as the reply simply not coming out. Short replies are the common
+    // case here, not the exception: the persona rules cap them at two
+    // sentences.
+    let go = this.turnComplete;
+    if (!go) {
+      if (setting("wait_for_complete_turn", WAIT_FOR_COMPLETE_TURN)) {
+        go = decoded >= setting("max_wait_seconds", MAX_WAIT_SECONDS) * this.fps;
+      } else {
+        go = decoded >= this._leadFrames();
+      }
     }
     if (!go) {
       return;

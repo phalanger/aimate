@@ -4,8 +4,8 @@
   "groups": [
     {
       "id": "lipsync",
-      "label": "口型同步",
-      "help": "只影响「真人口型」显示方式的角色，其他显示方式不受影响。",
+      "label": "画面与口型",
+      "help": "头部特写对 3D 和 2D 生效；画面填充方式对两种真人显示方式生效；下面的起播设置只影响「真人口型」。",
       "items": [
         {
           "key": "head_inset",
@@ -25,6 +25,23 @@
           "label": "特写放大倍数",
           "help": "调大看得更近。主画面里头部本来就小的话，放太大会糊。",
           "depends": "head_inset"
+        },
+        {
+          "key": "video_fit",
+          "type": "select",
+          "value": "contain",
+          "options": [
+            {
+              "value": "contain",
+              "label": "完整显示 - 看得到整段画面，两边可能留黑"
+            },
+            {
+              "value": "cover",
+              "label": "裁剪填满 - 铺满窗口，超出的部分裁掉"
+            }
+          ],
+          "label": "画面填充方式",
+          "help": "只影响「真人视频」和「真人口型」。方形素材（512×512 这类）选「裁剪填满」会把上下切掉，通常切掉的正是头部，所以默认是完整显示。"
         },
         {
           "key": "wait_for_complete_turn",
