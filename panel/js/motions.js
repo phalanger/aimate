@@ -25,6 +25,32 @@ export async function loadMotionRules() {
   return rules;
 }
 
+// The same rules drive subtitle highlighting: a word strong enough to pick an
+// animation is a word worth colouring. Reusing them means one list to edit
+// rather than two that drift apart.
+//
+// Single characters are skipped - in Chinese they turn up inside unrelated
+// words and would speckle the line - as are rules marked emphasis:false, whose
+// keywords are hedges ("maybe", "mm") rather than anything to stress.
+export function emphasisKeywords() {
+  const out = [];
+  for (const rule of (rules && rules.rules) || []) {
+    if (rule.emphasis === false) {
+      continue;
+    }
+    for (const keyword of rule.keywords || []) {
+      const word = String(keyword);
+      if (word.length > 1) {
+        out.push(word);
+      }
+    }
+  }
+  // Longest first, so a three-character phrase claims the run before a
+  // shorter keyword nested inside it can take part of it.
+  out.sort((a, b) => b.length - a.length);
+  return out;
+}
+
 function pick(list) {
   if (!list || !list.length) {
     return null;

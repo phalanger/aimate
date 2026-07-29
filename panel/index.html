@@ -26,14 +26,33 @@
         <div id="stage" class="stage"></div>
         <!-- Head close-up. Filled by copying a crop of whatever the active
              renderer drew, so it works for all of them without each one
-             having to render a second time. -->
-        <canvas id="stage-inset" class="stage-inset" hidden></canvas>
+             having to render a second time. The frame around the canvas is
+             what carries the drag and resize handles - a canvas cannot hold
+             child elements, so the grip has to live beside it. -->
+        <div id="inset-frame" class="inset-frame" hidden>
+          <canvas id="stage-inset" class="stage-inset"></canvas>
+          <span id="inset-grip" class="inset-grip" aria-hidden="true"></span>
+        </div>
+
+        <!-- Subtitles sit above the stage but below the controls, so the text
+             never covers the buttons the user needs to stop it. -->
+        <div id="subtitle" class="subtitle" hidden></div>
 
         <header class="overlay-top">
           <h1 id="app-title"></h1>
-          <div class="status-chip">
-            <span class="dot" aria-hidden="true"></span>
-            <span id="status" data-tone="idle"></span>
+          <div class="overlay-right">
+            <div class="status-chip">
+              <span class="dot" aria-hidden="true"></span>
+              <span id="status" data-tone="idle"></span>
+            </div>
+            <!-- On the stage rather than in the sidebar: the sidebar can be
+                 hidden entirely, and these three have to stay reachable. -->
+            <div class="stage-actions">
+              <button id="act-replay" type="button" class="stage-btn" disabled></button>
+              <button id="act-save" type="button" class="stage-btn" disabled></button>
+              <button id="act-settings" type="button" class="stage-btn"></button>
+              <button id="act-sidebar" type="button" class="stage-btn"></button>
+            </div>
           </div>
         </header>
 
@@ -54,6 +73,7 @@
             <button id="connect" type="button" class="primary"></button>
             <button id="mute" type="button" class="ghost" data-active="false"></button>
           </div>
+          <p id="rec-status" class="notice rec-status" hidden></p>
           <p id="notice" class="notice" hidden></p>
           <div id="error-box" class="error" hidden>
             <span id="error"></span>
@@ -80,7 +100,6 @@
         <div class="panel panel-grow">
           <div class="panel-head">
             <h2 id="transcript-title"></h2>
-            <button id="replay" type="button" class="icon-btn" disabled></button>
           </div>
           <div class="speaking-as">
             <span id="character-name"></span>

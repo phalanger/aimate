@@ -3,14 +3,18 @@ import { AudioEngine } from "./audio.js";
 import { RealtimeClient } from "./realtime.js";
 import { CharacterEditor } from "./editor.js";
 import { LlmSettings } from "./llm.js";
-import { SettingsDialog, loadSettings } from "./settings.js";
+import { SettingsDialog, loadSettings, setting } from "./settings.js";
 import { HeadInset } from "./inset.js";
 import { loadMotionRules } from "./motions.js";
+import { Subtitles, buildAss } from "./subtitles.js";
+import { Recorder, recordingSupported, uploadRecording } from "./record.js";
 
 // Derived from the page's own address rather than hardcoded to loopback: a
 // phone on the same network loading this page must connect back to this
 // machine, not to its own localhost.
 const REALTIME_URL = "ws://" + window.location.hostname + ":8765/v1/realtime";
+
+const PIPELINE_SAMPLE_RATE = 16000;
 
 // How long to wait for a generated picture before playing the reply without
 // it. Long enough for a normal turn, short enough that a broken service does
@@ -48,6 +52,8 @@ const state = {
   // asking the model for a fresh answer.
   lastReply: [],
   currentReply: [],
+  // What she said, for the subtitle track of a replay or a recording.
+  lastReplyText: "",
   replaying: false,
   lastPosition: -1,
   idleTicks: 0,
@@ -55,6 +61,13 @@ const state = {
   viewSaveTimer: null,
   motionAssets: [],
   partialUser: "",
+  subtitles: null,
+  recorder: null,
+  recording: false,
+  recordingTrack: null,
+  // The speaker's sample counter runs for the whole session; subtitles are
+  // timed per reply, so the turn's origin has to be captured separately.
+  replyBase: null,
 };
 
 function el(id) {
@@ -146,12 +159,29 @@ function showNotice(key) {
   node.hidden = false;
 }
 
+// Length of a cached reply, from the size of its audio rather than by timing
+// the playback: the chunks are base64 of 16-bit mono PCM, so the count follows
+// from the string lengths without decoding any of it.
+function replySeconds(chunks) {
+  let bytes = 0;
+  for (const chunk of chunks) {
+    let padding = 0;
+    if (chunk.endsWith("==")) {
+      padding = 2;
+    } else if (chunk.endsWith("=")) {
+      padding = 1;
+    }
+    bytes += (chunk.length / 4) * 3 - padding;
+  }
+  return bytes / 2 / PIPELINE_SAMPLE_RATE;
+}
+
 // Plays the previous reply again from its cached audio. Nothing is asked of
 // the model or the lip-sync service - the same samples and, where the picture
 // was generated, the same frames.
 function replayLastReply() {
   if (!state.lastReply.length || state.replaying || state.speaking) {
-    return;
+    return false;
   }
   state.replaying = true;
   clearTimeout(state.releaseTimer);
@@ -178,9 +208,139 @@ function replayLastReply() {
     }, RELEASE_TIMEOUT_MS);
   }
 
+  // A replay knows exactly how long it will last, so the cues can be timed
+  // against the real duration instead of an estimated speaking rate.
+  state.replyBase = null;
+  state.subtitles.begin(state.lastReplyText);
+  state.subtitles.setTotal(replySeconds(state.lastReply));
+
   setStatus("status_speaking", "speaking");
   for (const chunk of state.lastReply) {
     state.audio.enqueueAudio(chunk);
+  }
+  return true;
+}
+
+// One place for "she has stopped talking", reached both from the drain edge
+// and from the playhead sitting still. Either can be the one that arrives.
+function endOfSpeech() {
+  state.subtitles.clear();
+  if (state.recording) {
+    finishRecording();
+  }
+}
+
+// ---------- saving ----------
+
+function setRecordStatus(key, values, tone) {
+  const node = el("rec-status");
+  let text = t(key);
+  for (const [name, value] of Object.entries(values || {})) {
+    text = text.replace("{" + name + "}", value);
+  }
+  node.textContent = text;
+  node.dataset.tone = tone || "";
+  node.hidden = false;
+}
+
+// Records the last reply by playing it again and capturing the stage. There is
+// no faster path: the picture only exists while it is being drawn, and for two
+// of the renderers it is decoded video that was never in our hands as frames.
+function saveLastReply() {
+  if (state.recording) {
+    cancelRecording();
+    return;
+  }
+  if (!state.lastReply.length) {
+    setRecordStatus("err_record_nothing", null, "error");
+    return;
+  }
+  if (!recordingSupported()) {
+    setRecordStatus("err_record_unsupported", null, "error");
+    return;
+  }
+  if (state.replaying || state.speaking) {
+    return;
+  }
+
+  const audioStream = state.audio.captureStream();
+  const tracks = audioStream ? audioStream.getAudioTracks() : [];
+  const started = state.recorder.start(
+    // Read per frame rather than captured once: the real-footage renderers
+    // switch element when she starts and stops speaking.
+    () => state.stage.captureElement(),
+    tracks[0] || null
+  );
+  if (!started) {
+    setRecordStatus("err_record", null, "error");
+    return;
+  }
+
+  if (!replayLastReply()) {
+    state.recorder.cancel();
+    return;
+  }
+
+  // Taken now, while the replay is being set up. The end of the turn clears
+  // the cues so the text does not linger on screen, and the upload happens
+  // after that - reading them there would find nothing.
+  //
+  // Subtitles switched off means no track, whatever the save mode says: the
+  // switch that hides them on screen should not leave them in the file.
+  const track = state.subtitles.export();
+  state.recordingTrack = state.subtitles.enabled() ? track : { cues: [], keywords: [] };
+
+  state.recording = true;
+  el("act-save").dataset.active = "true";
+  el("act-save").textContent = t("icon_stop");
+  el("act-save").title = t("btn_stop");
+  setRecordStatus("rec_running");
+}
+
+function cancelRecording() {
+  state.recorder.cancel();
+  state.recording = false;
+  resetSaveButton();
+  setRecordStatus("rec_cancelled");
+}
+
+function resetSaveButton() {
+  const button = el("act-save");
+  button.dataset.active = "false";
+  button.textContent = t("icon_save");
+  button.title = t("btn_save_video");
+}
+
+async function finishRecording() {
+  state.recording = false;
+  resetSaveButton();
+  setRecordStatus("rec_encoding");
+  // Held down through the encode: the button is back to meaning "save" but
+  // the previous save has not landed yet, and starting a second replay over
+  // the top of it helps nobody.
+  el("act-save").disabled = true;
+
+  try {
+    const blob = await state.recorder.stop();
+    if (!blob) {
+      setRecordStatus("err_record", null, "error");
+      return;
+    }
+    const track = state.recordingTrack || { cues: [], keywords: [] };
+    const wanted = track.cues.length ? setting("save_subtitle_mode", "soft") : "none";
+    const result = await uploadRecording(blob, {
+      mode: wanted,
+      subtitle: track.cues.length ? buildAss(track.cues, track.keywords) : "",
+      crf: setting("save_crf", 20),
+      name: state.characterId,
+    });
+    setRecordStatus("rec_done", { path: result.path });
+  } catch (err) {
+    el("rec-status").textContent = t("err_record") + (err.message || err);
+    el("rec-status").dataset.tone = "error";
+    el("rec-status").hidden = false;
+  } finally {
+    el("act-save").disabled = !state.lastReply.length;
   }
 }
 
@@ -339,6 +499,12 @@ function wireClientEvents(client) {
     state.audio.clearPlayback();
     state.speaking = false;
     state.turnEnding = false;
+    state.subtitles.clear();
+    // A recording interrupted halfway is not the reply the user asked to
+    // save, so it is dropped rather than written out truncated.
+    if (state.recording) {
+      cancelRecording();
+    }
     setStatus("status_listening", "listening");
   });
 
@@ -365,6 +531,12 @@ function wireClientEvents(client) {
     if (!state.speaking) {
       state.speaking = true;
       state.currentReply = [];
+      // The turn's origin on the speaker's running sample counter, captured on
+      // the first position report after this.
+      state.replyBase = null;
+      // Dropped rather than carried over: if this turn produces no transcript,
+      // no subtitle is better than the previous reply's.
+      state.lastReplyText = "";
       // Order matters: the renderer needs to know the turn has begun before
       // audio reaches it, so it can hand over the current pose first.
       setStatus("status_speaking", "speaking");
@@ -379,10 +551,15 @@ function wireClientEvents(client) {
 
   client.on("response.output_audio_transcript.done", (event) => {
     const text = event.transcript || "";
+    state.lastReplyText = text;
     addTranscript("assistant", text);
     // The transcript is what "by context" matches against, and it arrives
     // while she is still speaking, so the motion lands during the reply.
     state.stage.playMotionFor(text);
+    // Subtitles start on an estimated speaking rate here: the reply is still
+    // being generated, so its real length is not known yet. response.done
+    // corrects it.
+    state.subtitles.begin(text);
   });
 
   client.on("response.done", () => {
@@ -392,7 +569,10 @@ function wireClientEvents(client) {
     if (state.currentReply.length) {
       state.lastReply = state.currentReply;
       state.currentReply = [];
-      el("replay").disabled = false;
+      // The whole reply is in hand, so the cue timing can stop guessing.
+      state.subtitles.setTotal(replySeconds(state.lastReply));
+      el("act-replay").disabled = false;
+      el("act-save").disabled = false;
     }
     // Tells the lip-sync service the turn is over so it flushes whatever
     // audio is still buffered instead of holding it until the next turn.
@@ -416,6 +596,7 @@ function wireClientEvents(client) {
     if (!state.audio.isActive()) {
       state.turnEnding = false;
       state.stage.silence();
+      endOfSpeech();
     }
     setStatus("status_ready", "ready");
   });
@@ -481,11 +662,22 @@ async function connect() {
       state.turnEnding = false;
       state.replaying = false;
       state.stage.silence();
+      endOfSpeech();
       setStatus("status_ready", "ready");
     }
   };
   state.audio.onPosition = (played, active) => {
     state.stage.setAudioPosition(played, active);
+
+    // Subtitles are timed against samples actually played, the same clock the
+    // generated picture uses. A timer of its own would drift apart from both.
+    if (state.replyBase === null && (state.speaking || state.replaying)) {
+      state.replyBase = played;
+    }
+    if (state.replyBase !== null) {
+      state.subtitles.setElapsed((played - state.replyBase) / PIPELINE_SAMPLE_RATE);
+    }
+
     // Clearing this from the periodic report rather than an edge event means
     // a missed "drained" cannot leave replay permanently disabled.
     if (!active && state.replaying && played === state.lastPosition) {
@@ -493,6 +685,7 @@ async function connect() {
       if (state.idleTicks > 20) {
         state.replaying = false;
         state.idleTicks = 0;
+        endOfSpeech();
         setStatus("status_ready", "ready");
       }
     } else {
@@ -556,8 +749,15 @@ function applyStaticText() {
   el("connect").textContent = t("connect");
   el("mute").textContent = t("mute");
   el("compose-send").textContent = t("send");
-  el("replay").textContent = t("icon_replay");
-  el("replay").title = t("btn_replay");
+  el("act-replay").textContent = t("icon_replay");
+  el("act-replay").title = t("btn_replay");
+  el("act-save").textContent = t("icon_save");
+  el("act-save").title = t("btn_save_video");
+  el("act-settings").textContent = t("icon_settings");
+  el("act-settings").title = t("btn_settings");
+  el("act-sidebar").textContent = t("icon_sidebar");
+  el("act-sidebar").title = t("btn_sidebar");
+  el("inset-frame").title = t("inset_title");
   el("error-retry").textContent = t("btn_retry");
   el("compose-input").placeholder = t("compose_placeholder");
   el("hint-switch").textContent = t("hint_switch");
@@ -613,7 +813,7 @@ async function main() {
   });
   state.audio = new AudioEngine();
 
-  state.inset = new HeadInset(el("stage-inset"));
+  state.inset = new HeadInset(el("inset-frame"), el("stage-inset"));
   state.inset.attach(state.stage);
   state.inset.start();
 
@@ -640,6 +840,16 @@ async function main() {
     // Defaults in the code cover a missing settings.json.
   }
 
+  // After the settings load: the subtitle styling is read straight out of
+  // them at construction.
+  state.subtitles = new Subtitles(el("subtitle"), el("stage"));
+  state.recorder = new Recorder();
+  if (!recordingSupported()) {
+    // Firefox has MediaRecorder but not canvas.captureStream on every path;
+    // a button that can only ever report a failure should not be offered.
+    el("act-save").hidden = true;
+  }
+
   await loadMotionRules();
   try {
     const assets = await loadJson("/api/assets");
@@ -652,8 +862,13 @@ async function main() {
     llm: state.llm,
     // Renderers read settings when a turn starts, so most changes apply on the
     // next reply. Remounting is only needed where the setting shapes the
-    // renderer itself.
-    onChange: () => {},
+    // renderer itself. Subtitles are the exception: their styling is being
+    // judged against what is on screen, so it has to follow the control.
+    onChange: (key) => {
+      if (key.indexOf("subtitle_") === 0) {
+        state.subtitles.applyStyle();
+      }
+    },
   });
   state.settings.applyStaticText();
 
@@ -676,7 +891,12 @@ async function main() {
     }
   });
 
-  el("replay").addEventListener("click", () => replayLastReply());
+  el("act-replay").addEventListener("click", () => replayLastReply());
+  el("act-save").addEventListener("click", () => saveLastReply());
+  el("act-settings").addEventListener("click", () => {
+    state.llm.prepare();
+    state.settings.open("llm");
+  });
   el("error-retry").addEventListener("click", () => retryRenderer());
 
   el("compose").addEventListener("submit", (event) => {
@@ -696,7 +916,10 @@ async function main() {
 }
 
 // Collapsed state is remembered: whether the character list is wanted is a
-// standing preference, not something to re-express on every page load.
+// standing preference, not something to re-express on every page load. The
+// same goes for the sidebar as a whole, which is why replay, save and settings
+// live on the stage - with the sidebar hidden there would be nowhere else for
+// them to be.
 function setupCollapse() {
   const toggle = el("characters-toggle");
   const body = el("characters-body");
@@ -713,6 +936,23 @@ function setupCollapse() {
     const collapsed = toggle.dataset.collapsed !== "true";
     apply(collapsed);
     window.localStorage.setItem("mate.characters.collapsed", collapsed ? "1" : "0");
+  });
+
+  const shell = document.querySelector(".shell");
+  const hidden = window.localStorage.getItem("mate.sidebar.hidden") === "1";
+
+  const applySidebar = (value) => {
+    shell.dataset.sidebar = value ? "hidden" : "shown";
+    // Marked when hidden rather than when shown: the highlight says "this is
+    // not the default state", which is the thing worth noticing.
+    el("act-sidebar").dataset.on = String(value);
+  };
+
+  applySidebar(hidden);
+  el("act-sidebar").addEventListener("click", () => {
+    const next = shell.dataset.sidebar !== "hidden";
+    applySidebar(next);
+    window.localStorage.setItem("mate.sidebar.hidden", next ? "1" : "0");
   });
 }
 

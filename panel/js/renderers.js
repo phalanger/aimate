@@ -42,6 +42,14 @@ class BaseRenderer {
   }
   // Renderers that can act out a reply override this; the rest ignore it.
   playMotionFor() {}
+  // What the recorder copies frames from. Separate from sourceElement()
+  // because that answers a different question: two renderers deliberately opt
+  // out of the head inset to keep a per-frame crop off the main thread during
+  // a live reply, but recording is an explicit, one-off action where that cost
+  // is worth paying.
+  captureElement() {
+    return null;
+  }
   silence() {}
   dispose() {
     if (this.container) {
@@ -67,6 +75,10 @@ class OrbRenderer extends BaseRenderer {
   }
 
   sourceElement() {
+    return this.canvas || null;
+  }
+
+  captureElement() {
     return this.canvas || null;
   }
 
@@ -138,6 +150,10 @@ class VrmRenderer extends BaseRenderer {
   }
 
   sourceElement() {
+    return this.canvas || null;
+  }
+
+  captureElement() {
     return this.canvas || null;
   }
 
@@ -265,6 +281,14 @@ class VideoRenderer extends BaseRenderer {
     return null;
   }
 
+  // Whichever layer is currently visible. The two are crossfaded by opacity,
+  // so during the fade one of them is briefly the wrong answer - over a
+  // 0.35s transition at the very start of a turn, which is not worth
+  // compositing both layers for the whole recording.
+  captureElement() {
+    return this.talking && this.talk ? this.talk : this.idle;
+  }
+
   setLevel() {}
 
   silence() {
@@ -309,6 +333,10 @@ class Live2DRenderer extends BaseRenderer {
   }
 
   sourceElement() {
+    return this.canvas || null;
+  }
+
+  captureElement() {
     return this.canvas || null;
   }
 
@@ -390,6 +418,12 @@ class MuseTalkRenderer extends BaseRenderer {
   // where the picture is already struggling to keep pace with the voice.
   sourceElement() {
     return null;
+  }
+
+  // The generated canvas while she speaks, the idle loop between turns - which
+  // is exactly what a recording of the turn should contain.
+  captureElement() {
+    return this.stage ? this.stage.sourceElement() : null;
   }
 
   // The app routes decoded TTS audio here in addition to the speaker.

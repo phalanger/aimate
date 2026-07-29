@@ -51,6 +51,7 @@ export class AudioEngine {
     this.micNode = null;
     this.playbackNode = null;
     this.sourceNode = null;
+    this.recordDestination = null;
     this.onAudioFrame = null;
     this.onMicLevel = null;
     this.onPcm = null;
@@ -148,6 +149,14 @@ export class AudioEngine {
     this.micAvailable = true;
   }
 
+  // A MediaStream carrying only her voice - not the microphone, and not
+  // anything else the machine is playing. Recording taps this rather than
+  // capturing the system output, so a notification sound or a video in
+  // another tab cannot end up in a saved reply.
+  captureStream() {
+    return this.recordDestination ? this.recordDestination.stream : null;
+  }
+
   _startPlayback() {
     this.playbackNode = new AudioWorkletNode(this.context, "audio-playback", {
       numberOfInputs: 0,
@@ -172,6 +181,12 @@ export class AudioEngine {
       }
     };
     this.playbackNode.connect(this.context.destination);
+
+    // Connected up front rather than when a recording starts: a graph edge
+    // added mid-playback would miss the samples already in flight, and an
+    // unread destination node costs nothing.
+    this.recordDestination = this.context.createMediaStreamDestination();
+    this.playbackNode.connect(this.recordDestination);
   }
 
   enqueueAudio(base64Chunk) {
@@ -246,6 +261,7 @@ export class AudioEngine {
       this.playbackNode.disconnect();
       this.playbackNode = null;
     }
+    this.recordDestination = null;
     if (this.stream) {
       for (const track of this.stream.getTracks()) {
         track.stop();

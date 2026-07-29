@@ -59,6 +59,10 @@ export class Stage {
     return this.renderer && this.renderer.sourceElement ? this.renderer.sourceElement() : null;
   }
 
+  captureElement() {
+    return this.renderer && this.renderer.captureElement ? this.renderer.captureElement() : null;
+  }
+
   gatesAudio() {
     return !!(this.renderer && this.renderer.gatesAudio());
   }

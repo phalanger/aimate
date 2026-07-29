@@ -36,6 +36,16 @@ body {
   height: 100vh;
 }
 
+/* Hidden rather than narrowed: a collapsed-but-present column still costs the
+   gap and the padding, which reads as a stripe down the side of the picture. */
+.shell[data-sidebar="hidden"] {
+  grid-template-columns: 1fr;
+}
+
+.shell[data-sidebar="hidden"] .sidebar {
+  display: none;
+}
+
 /* ---------- 3D stage ---------- */
 
 .stage-wrap {
@@ -76,7 +86,9 @@ body {
   transition: opacity 0.35s ease;
 }
 
-.stage-inset {
+/* Position and size come from JS, which restores them from the last session;
+   the values here are only what applies before that runs. */
+.inset-frame {
   position: absolute;
   top: 62px;
   left: 24px;
@@ -87,20 +99,57 @@ body {
   border: 1px solid var(--border);
   border-radius: 14px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-  object-fit: cover;
+  cursor: grab;
+  touch-action: none;
 }
 
-.stage-inset[hidden] {
+.inset-frame[hidden] {
   display: none;
 }
 
-@media (max-width: 900px) {
-  .stage-inset {
-    width: 128px;
-    height: 128px;
-    top: 56px;
-    left: 14px;
-  }
+.inset-frame[data-dragging="true"] {
+  cursor: grabbing;
+  border-color: rgba(232, 165, 152, 0.5);
+}
+
+.stage-inset {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 13px;
+  /* The canvas would otherwise swallow the pointer events the frame needs. */
+  pointer-events: none;
+}
+
+/* Only visible on hover: the picture is the point, and a permanent handle in
+   the corner of a close-up of someone's face is a distraction. */
+.inset-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 22px;
+  height: 22px;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  touch-action: none;
+}
+
+.inset-grip::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid rgba(255, 255, 255, 0.75);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.75);
+  border-radius: 0 0 3px 0;
+}
+
+.inset-frame:hover .inset-grip,
+.inset-frame[data-dragging="true"] .inset-grip {
+  opacity: 1;
 }
 
 .overlay-top {
@@ -121,6 +170,70 @@ body {
   font-weight: 500;
   letter-spacing: 0.06em;
   color: var(--text-dim);
+}
+
+.overlay-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* The header is click-through so it never blocks the stage; the buttons in it
+   have to opt back in. */
+.stage-actions {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+}
+
+.stage-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+}
+
+.stage-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.stage-btn:disabled {
+  color: rgba(255, 255, 255, 0.16);
+  cursor: default;
+}
+
+/* Recording is the one action here that keeps running after the click, so it
+   is the one that needs to look engaged. */
+.stage-btn[data-active="true"] {
+  color: var(--error);
+  background: rgba(232, 139, 139, 0.16);
+}
+
+.stage-btn[data-on="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.rec-status {
+  color: var(--accent);
+}
+
+.rec-status[data-tone="error"] {
+  color: var(--error);
 }
 
 .status-chip {
@@ -173,6 +286,44 @@ body {
     opacity: 0.45;
     transform: scale(0.82);
   }
+}
+
+/* ---------- subtitles ---------- */
+
+/* Every value here is driven by a custom property the subtitle module writes
+   from settings, so changing a colour or a size is one assignment rather than
+   a stylesheet edit. The size is computed in pixels from the stage height -
+   vh would be wrong in the stacked mobile layout, where the stage is only part
+   of the viewport. */
+.subtitle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--sub-bottom, 9%);
+  z-index: 4;
+  padding: 0 7%;
+  font-family: var(--sub-font, inherit);
+  font-size: var(--sub-size, 34px);
+  font-weight: var(--sub-weight, 700);
+  line-height: 1.35;
+  color: var(--sub-color, #fff);
+  text-align: center;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  /* Without this the stroke is drawn over the glyph and eats into it, which
+     at subtitle weights reads as a blurrier, thinner font. */
+  paint-order: stroke fill;
+  -webkit-text-stroke: var(--sub-stroke, 0) rgba(0, 0, 0, 0.85);
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+}
+
+.subtitle[hidden] {
+  display: none;
+}
+
+.subtitle em {
+  font-style: normal;
+  color: var(--sub-highlight, #ffd64a);
 }
 
 .overlay-bottom {
@@ -772,6 +923,25 @@ button:active {
   border: 1px solid var(--border);
   border-radius: 8px;
   outline: none;
+}
+
+.setting-color {
+  width: 52px;
+  height: 30px;
+  padding: 2px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.setting-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.setting-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 5px;
 }
 
 .setting-unit {

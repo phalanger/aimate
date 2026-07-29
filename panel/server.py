@@ -15,6 +15,7 @@ Endpoints
     POST /api/voices?name=&start=&duration=
                                   upload audio, normalise it for Qwen3-TTS
     POST /api/transcribe?file=    transcribe a reference clip for ref_text
+    POST /api/record              mux a recorded reply into recordings/
 """
 
 import argparse
@@ -101,6 +102,7 @@ class Paths:
         self.settings = os.path.join(self.panel, "settings.json")
         self.voices = os.path.join(self.root, "voices")
         self.bin = os.path.join(self.root, "bin")
+        self.recordings = os.path.join(self.root, "recordings")
         self.transcribe = os.path.join(self.panel, "transcribe.py")
         if not os.path.isdir(self.voices):
             os.makedirs(self.voices)
@@ -279,6 +281,66 @@ def convert_audio(source, target, start, duration):
         raise PanelError(400, "ffmpeg failed: " + (detail or "unknown error"))
 
 
+def mux_recording(workdir, source, subtitle_path, mode, crf):
+    """Turn the browser's WebM into the container the user asked for.
+
+    The browser can only hand us WebM, and MediaRecorder cannot write a
+    subtitle track at all, so the second pass is unavoidable if subtitles are
+    wanted. It is also what makes the file play everywhere - VP9 in WebM is
+    fine in a browser and awkward in most desktop players.
+
+    ffmpeg runs with its working directory set to the job folder so the ass
+    filter can name the script as a bare filename. Filter arguments treat
+    both the colon and the backslash as syntax, which makes an absolute
+    Windows path ("C:\\...") a parsing problem rather than a path.
+    """
+    ffmpeg = find_ffmpeg()
+    encode = [
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", str(crf),
+        # x264 defaults to a chroma format most players will not touch.
+        "-pix_fmt", "yuv420p",
+        # MediaRecorder produces variable frame rate with an arbitrary start
+        # time; pinning the output rate keeps players from mistiming it.
+        "-r", "25",
+        "-c:a", "aac",
+        "-b:a", "160k",
+    ]
+
+    if mode == "soft":
+        output = "out.mkv"
+        command = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", source,
+            "-i", subtitle_path,
+            "-map", "0:v:0",
+            # Optional: a recording made with the speaker silent has no audio
+            # stream at all, and a hard mapping would fail on it.
+            "-map", "0:a:0?",
+            "-map", "1:0",
+        ] + encode + ["-c:s", "ass", output]
+    elif mode == "burn":
+        output = "out.mp4"
+        command = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", source,
+            "-vf", "ass=" + subtitle_path,
+        ] + encode + ["-movflags", "+faststart", output]
+    else:
+        output = "out.mp4"
+        command = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", source,
+        ] + encode + ["-movflags", "+faststart", output]
+
+    result = subprocess.run(command, capture_output=True, cwd=workdir, timeout=1800)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()[-400:]
+        raise PanelError(500, "ffmpeg failed: " + (detail or "unknown error"))
+    return os.path.join(workdir, output)
+
+
 def transcribe_audio(path, language):
     result = subprocess.run(
         [PYTHON, PATHS.transcribe, path, language],
@@ -386,6 +448,8 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self._proxy_chat()
             elif route == "/api/musetalk/prepare":
                 self._prepare_musetalk()
+            elif route == "/api/record":
+                self._post_record()
             else:
                 raise PanelError(404, "unknown endpoint")
         except llm_router.RouterError as exc:
@@ -717,6 +781,77 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
             raise PanelError(exc.code, detail)
         except Exception as exc:
             raise PanelError(502, "lip-sync service unreachable: %s" % exc)
+
+    def _post_record(self):
+        """Store a recorded reply, muxing in the subtitle track if asked.
+
+        The video arrives base64-encoded inside the JSON body so that it can
+        travel alongside the subtitle text in one request. That costs a third
+        more bytes over a loopback connection, which is a good trade against
+        hand-rolling multipart parsing on top of the stdlib.
+        """
+        import base64
+        import time
+
+        # Comfortably above a base64-encoded minute of the 8 Mbit/s
+        # intermediate the browser produces.
+        payload = json.loads(self._read_body(limit=256 * 1024 * 1024).decode("utf-8"))
+
+        try:
+            video = base64.b64decode(payload.get("video") or "", validate=True)
+        except Exception:
+            raise PanelError(400, "video must be base64")
+        if not video:
+            raise PanelError(400, "empty recording")
+
+        mode = payload.get("mode") or "none"
+        if mode not in ("soft", "burn", "none"):
+            mode = "none"
+        subtitle = payload.get("subtitle") or ""
+        if not subtitle.strip():
+            # Asking for a subtitle track and supplying no cues would produce a
+            # file with an empty track, which reads as a bug in the player.
+            mode = "none"
+
+        try:
+            crf = int(payload.get("crf") or 20)
+        except (TypeError, ValueError):
+            crf = 20
+        crf = max(14, min(crf, 32))
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        label = re.sub(r"[^A-Za-z0-9_-]", "", str(payload.get("name") or ""))[:24]
+        stem = "reply-" + stamp + ("-" + label if label else "")
+
+        if not os.path.isdir(PATHS.recordings):
+            os.makedirs(PATHS.recordings)
+        workdir = os.path.join(PATHS.recordings, "." + stem)
+        os.makedirs(workdir)
+
+        try:
+            source = os.path.join(workdir, "in.webm")
+            with open(source, "wb") as handle:
+                handle.write(video)
+
+            subtitle_path = "sub.ass"
+            if mode != "none":
+                with open(os.path.join(workdir, subtitle_path), "w", encoding="utf-8") as handle:
+                    handle.write(subtitle)
+
+            produced = mux_recording(workdir, "in.webm", subtitle_path, mode, crf)
+            target = os.path.join(PATHS.recordings, stem + os.path.splitext(produced)[1])
+            os.replace(produced, target)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+        self._send_json(
+            {
+                "ok": True,
+                "path": target,
+                "name": os.path.basename(target),
+                "bytes": os.path.getsize(target),
+            }
+        )
 
     def _post_transcribe(self):
         name = self._param("file")

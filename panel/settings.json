@@ -1,5 +1,5 @@
 {
-  "_comment": "运行时设置。这个文件是自描述的：界面按 groups/items 自动生成，新增一个开关只要在这里加一条，不用改前端代码。type 支持 bool / number / select。",
+  "_comment": "运行时设置。这个文件是自描述的：界面按 groups/items 自动生成，新增一个开关只要在这里加一条，不用改前端代码。type 支持 bool / number / select / color / links。",
   "_depends": "depends 字段表示这一项只在某个条件成立时才显示，写法是另一项的 key，前面加 ! 表示取反。",
   "groups": [
     {
@@ -92,6 +92,150 @@
           "label": "动作只播一次",
           "help": "开启后动作播完停在最后一帧，适合鼓掌、跳跃这类有明确起止的动作。关闭则循环播放，适合待机类。",
           "depends": "!motion_fixed_only"
+        }
+      ]
+    },
+    {
+      "id": "subtitle",
+      "label": "字幕",
+      "help": "她说话时在画面下方显示这一句的文字。字幕按标点断句，每句的显示时长按字数分配。",
+      "items": [
+        {
+          "key": "subtitle_show",
+          "type": "bool",
+          "value": true,
+          "label": "显示字幕",
+          "help": "关掉以后画面上不显示，保存视频时也不带字幕轨。"
+        },
+        {
+          "key": "subtitle_font",
+          "type": "select",
+          "value": "\"Source Han Sans SC\", \"Noto Sans SC\", \"Microsoft YaHei\", \"PingFang SC\", sans-serif",
+          "options": [
+            {
+              "value": "\"Source Han Sans SC\", \"Noto Sans SC\", \"Microsoft YaHei\", \"PingFang SC\", sans-serif",
+              "label": "黑体（默认）"
+            },
+            {
+              "value": "\"Yuanti SC\", \"YouYuan\", \"Microsoft YaHei\", sans-serif",
+              "label": "圆体"
+            },
+            {
+              "value": "\"KaiTi\", \"STKaiti\", \"Kaiti SC\", serif",
+              "label": "楷体"
+            },
+            {
+              "value": "\"SimSun\", \"Songti SC\", serif",
+              "label": "宋体"
+            },
+            {
+              "value": "inherit",
+              "label": "跟随界面字体"
+            }
+          ],
+          "label": "字体",
+          "help": "列的是字体族，系统里没装的会自动往后退一个。保存成视频时只用得上第一个字体名，所以想要什么字体最好本机装好。",
+          "depends": "subtitle_show"
+        },
+        {
+          "key": "subtitle_bold",
+          "type": "bool",
+          "value": true,
+          "label": "加粗",
+          "help": "深色画面上细字看不清，默认开。",
+          "depends": "subtitle_show"
+        },
+        {
+          "key": "subtitle_size",
+          "type": "number",
+          "value": 4.2,
+          "min": 2,
+          "max": 10,
+          "step": 0.1,
+          "unit": "%",
+          "label": "字号",
+          "help": "按画面高度的百分比算，所以换窗口大小、换分辨率都不用重调。",
+          "depends": "subtitle_show"
+        },
+        {
+          "key": "subtitle_color",
+          "type": "color",
+          "value": "#ffffff",
+          "label": "字体颜色",
+          "depends": "subtitle_show"
+        },
+        {
+          "key": "subtitle_outline",
+          "type": "bool",
+          "value": true,
+          "label": "描边",
+          "help": "给字加一圈深色边。画面亮的时候没有描边的白字会糊成一片。",
+          "depends": "subtitle_show"
+        },
+        {
+          "key": "subtitle_highlight",
+          "type": "bool",
+          "value": true,
+          "label": "关键词高亮",
+          "help": "命中 panel\\motions.json 里那些情绪关键词的字换个颜色，和动作选择用的是同一份规则，改一处两处都变。",
+          "depends": "subtitle_show"
+        },
+        {
+          "key": "subtitle_highlight_color",
+          "type": "color",
+          "value": "#ffd64a",
+          "label": "高亮颜色",
+          "depends": "subtitle_highlight"
+        },
+        {
+          "key": "subtitle_bottom",
+          "type": "number",
+          "value": 9,
+          "min": 2,
+          "max": 40,
+          "step": 1,
+          "unit": "%",
+          "label": "距底部",
+          "help": "同样按画面高度的百分比算。调大可以避开输入框。",
+          "depends": "subtitle_show"
+        }
+      ]
+    },
+    {
+      "id": "save",
+      "label": "保存视频",
+      "help": "主画面右上角的下载图标会把上一条回复存成视频。录制是实时的：它要把这条回复重播一遍，所以花的时间和回复本身一样长。文件写到项目的 recordings\\ 目录。",
+      "items": [
+        {
+          "key": "save_subtitle_mode",
+          "type": "select",
+          "value": "soft",
+          "options": [
+            {
+              "value": "soft",
+              "label": "字幕轨 - MKV，播放器里可以开关"
+            },
+            {
+              "value": "burn",
+              "label": "烧进画面 - MP4，发到哪都能看见"
+            },
+            {
+              "value": "none",
+              "label": "不要字幕 - MP4"
+            }
+          ],
+          "label": "字幕保存方式",
+          "help": "字幕轨保留了字体和颜色（ASS 格式），但有的播放器默认不打开字幕。要发给别人建议选烧进画面。字幕开关关掉时这一项不起作用。"
+        },
+        {
+          "key": "save_crf",
+          "type": "number",
+          "value": 20,
+          "min": 14,
+          "max": 32,
+          "step": 1,
+          "label": "画质",
+          "help": "x264 的 CRF 值，越小越清晰、文件越大。18 接近无损，23 是常见默认。"
         }
       ]
     },

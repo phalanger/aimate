@@ -224,6 +224,22 @@ export class SettingsDialog {
       input.addEventListener("change", () => {
         this._save(item.key, parseFloat(input.value));
       });
+    } else if (item.type === "color") {
+      input = document.createElement("input");
+      input.type = "color";
+      input.className = "setting-color";
+      input.value = STORE.values[item.key];
+      // "input" rather than "change": a colour is judged against the picture
+      // behind it, and waiting for the picker to close means judging it blind.
+      // The write is debounced so dragging the wheel is not one request a frame.
+      input.addEventListener("input", () => {
+        STORE.values[item.key] = input.value;
+        if (this.onChange) {
+          this.onChange(item.key, input.value);
+        }
+        clearTimeout(this.colorTimer);
+        this.colorTimer = setTimeout(() => this._save(item.key, input.value), 400);
+      });
     } else if (item.type === "select") {
       input = document.createElement("select");
       input.className = "setting-select";
