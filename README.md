@@ -53,9 +53,8 @@ I:\ai\code\mate\scripts\start-all.ps1
 
 ### 1. Ollama 的工作目录决定它能否用上显卡
 
-**这是最隐蔽的一个。** 如果从一个含有其他 ggml 二进制的目录启动 Ollama
-（比如本项目根目录，底下有 `llama.cpp\`），它的 runner 会加载到不匹配的 ggml 库，
-然后崩溃：
+**这是最隐蔽的一个。** 如果从一个含有其他 ggml 二进制的目录启动 Ollama，
+它的 runner 会加载到不匹配的 ggml 库，然后崩溃：
 
 ```text
 GGML_ASSERT(prev != ggml_uncaught_exception) failed
@@ -68,7 +67,12 @@ llama runner terminated  error="exit status 0xc0000409"
 
 解决：从 Ollama 自己的安装目录启动它，或直接用托盘程序启动。
 本项目把 `OLLAMA_HOST` 持久化为用户环境变量，让托盘程序自动绑定正确端口，
-`scripts\check-llm.ps1` 只做健康检查、不再代为启动进程。
+supervisor 也只对 Ollama 探活、不代为启动（`scripts\services.json` 里
+`"managed": false`）。
+
+触发这个坑的 `llama.cpp\` 目录当时就在项目根目录下，现已删除（见下一条：那些
+二进制在本机根本跑不起来）。但这条仍然值得记住——任何含 ggml 二进制的目录都会
+复现它。
 
 正常时日志应该是：
 
