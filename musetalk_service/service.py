@@ -1,0 +1,392 @@
+"""Real-time lip-sync service.
+
+Runs in its own conda environment ("musetalk"): MuseTalk pins torch 2.0.1 with
+CUDA 11.8, while the voice pipeline runs torch 2.9 with CUDA 12.8. They cannot
+share an interpreter, so they talk over HTTP and a WebSocket instead.
+
+MuseTalk splits into two very different phases, and the split is what makes it
+usable for conversation:
+
+  preparation  video -> per-frame face detection, face parsing, VAE latents.
+               Slow (minutes) and needs the mmpose stack. Runs once per
+               character, then lives in a cache on disk.
+
+  inference    audio -> whisper features -> UNet -> VAE decode -> frames.
+               Fast enough for real time, and touches none of the heavy
+               preprocessing.
+
+So the character's video is prepared ahead of time, and each spoken turn only
+pays for the second phase.
+
+Endpoints
+    GET  /health                 model and avatar status
+    GET  /avatars                prepared avatars
+    POST /prepare                build the cache for one video
+    WS   /stream?avatar=<id>     audio in, JPEG frames out
+"""
+
+import argparse
+import asyncio
+import base64
+import json
+import os
+import sys
+import time
+import traceback
+from pathlib import Path
+
+# MuseTalk imports resolve against its repo root.
+REPO = Path(__file__).resolve().parent.parent / "musetalk"
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+DEFAULT_HOST = "127.0.0.1"
+PANEL_SETTINGS = Path(__file__).resolve().parent.parent / "panel" / "settings.json"
+
+
+def read_lan_setting():
+    """Follow the panel's network setting so the two agree.
+
+    If the panel is reachable from the network but this service is not, the
+    page loads on another device and then silently has no lip sync.
+    """
+    try:
+        with open(PANEL_SETTINGS, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        for group in data.get("groups", []):
+            for item in group.get("items", []):
+                if item.get("key") == "lan_access":
+                    return bool(item.get("value"))
+    except Exception:
+        pass
+    return False
+DEFAULT_PORT = 8930
+DEFAULT_FPS = 25
+
+# Audio arrives from the TTS at the pipeline rate; MuseTalk's whisper front end
+# expects 16 kHz, which happens to match.
+AUDIO_SAMPLE_RATE = 16000
+
+# Chunk size trades startup latency against throughput. Measured on this
+# machine, warmed:
+#
+#   0.6 s -> first frame 1.73 s, 2.98x realtime  (fixed per-pass cost dominates)
+#   1.0 s -> first frame 0.88 s, 0.98x realtime
+#   2.5 s -> first frame 2.07 s, 0.92x realtime
+#
+# Below about a second the fixed cost of a whisper pass (its feature extractor
+# zero-pads every input to 30 s) stops being amortised and generation falls
+# behind. One second keeps up while starting more than twice as fast as the
+# larger chunk, which matters because the speaker waits for the first frames.
+MIN_CHUNK_SECONDS = 1.0
+
+
+class ServiceState:
+    def __init__(self, args):
+        self.args = args
+        self.ready = False
+        self.error = None
+        self.avatars = {}
+        self.lock = asyncio.Lock()
+
+        # Populated by load_models().
+        self.vae = None
+        self.unet = None
+        self.pe = None
+        self.whisper = None
+        self.audio_processor = None
+        self.weight_dtype = None
+        self.timesteps = None
+        self.device = None
+
+
+STATE = None
+
+
+def load_models(state):
+    """Load the inference-time models. Preprocessing models load lazily."""
+    import torch
+
+    from musetalk.utils.utils import load_all_model
+    from musetalk.utils.audio_processor import AudioProcessor
+
+    args = state.args
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    state.device = device
+
+    vae, unet, pe = load_all_model(
+        unet_model_path=args.unet_model_path,
+        vae_type=args.vae_type,
+        unet_config=args.unet_config,
+        device=device,
+    )
+
+    # half precision on GPU: the UNet and VAE decode dominate the per-frame
+    # cost, and fp16 is what makes 25 fps reachable.
+    if device.type == "cuda":
+        vae.vae = vae.vae.half()
+        unet.model = unet.model.half()
+        pe = pe.half()
+        state.weight_dtype = torch.float16
+    else:
+        state.weight_dtype = torch.float32
+
+    state.vae = vae
+    state.unet = unet
+    state.pe = pe
+    state.timesteps = torch.tensor([0], device=device)
+
+    state.audio_processor = AudioProcessor(feature_extractor_path=args.whisper_dir)
+
+    from transformers import WhisperModel
+
+    whisper = WhisperModel.from_pretrained(args.whisper_dir)
+    whisper = whisper.to(device=device, dtype=state.weight_dtype).eval()
+    whisper.requires_grad_(False)
+    state.whisper = whisper
+
+    state.ready = True
+
+
+def build_app(state):
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.responses import JSONResponse
+
+    app = FastAPI(title="mate musetalk service")
+
+    @app.get("/health")
+    def health():
+        return {
+            "ready": state.ready,
+            "error": state.error,
+            "device": str(state.device),
+            "avatars": sorted(state.avatars),
+        }
+
+    @app.get("/avatars")
+    def avatars():
+        return {"avatars": [a.describe() for a in state.avatars.values()]}
+
+    @app.post("/prepare")
+    async def prepare(payload: dict):
+        avatar_id = payload.get("avatar_id")
+        video_path = payload.get("video_path")
+        if not avatar_id or not video_path:
+            return JSONResponse({"error": "avatar_id and video_path are required"}, 400)
+
+        # Preparation is GPU-heavy and single-threaded; serialise it so two
+        # requests cannot fight over the card.
+        async with state.lock:
+            try:
+                avatar = await asyncio.to_thread(
+                    prepare_avatar, state, avatar_id, video_path, payload.get("bbox_shift", 0)
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                return JSONResponse({"error": str(exc)}, 500)
+        state.avatars[avatar_id] = avatar
+        return {"ok": True, "avatar": avatar.describe()}
+
+    @app.websocket("/stream")
+    async def stream(websocket: WebSocket):
+        await websocket.accept()
+        avatar_id = websocket.query_params.get("avatar")
+        avatar = state.avatars.get(avatar_id)
+        if avatar is None:
+            await websocket.send_json({"type": "error", "message": "unknown avatar: %s" % avatar_id})
+            await websocket.close()
+            return
+
+        await websocket.send_json(
+            {"type": "ready", "avatar": avatar_id, "cycle": avatar.cycle_length(), "fps": state.args.fps}
+        )
+
+        session = StreamSession(state, avatar, websocket)
+        try:
+            await session.run()
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            traceback.print_exc()
+            try:
+                await websocket.send_json({"type": "error", "message": str(exc)})
+            except Exception:
+                pass
+
+    return app
+
+
+def restore_cached_avatars(state):
+    """Re-register avatars that were prepared in an earlier run.
+
+    Preparation results live on disk, so a restart should not force the user
+    back through a two-minute rebuild for work that is already done.
+    """
+    from avatar import Avatar
+
+    cache_dir = state.args.cache_dir
+    if not os.path.isdir(cache_dir):
+        return
+
+    for name in sorted(os.listdir(cache_dir)):
+        info_path = os.path.join(cache_dir, name, "info.json")
+        if not os.path.exists(info_path):
+            continue
+        try:
+            with open(info_path, "r", encoding="utf-8") as handle:
+                info = json.load(handle)
+            avatar = Avatar(state, name, info.get("video_path", ""), info.get("bbox_shift", 0))
+            if not avatar.is_cached():
+                continue
+            avatar.load()
+            state.avatars[name] = avatar
+            print("restored avatar '%s' (%d frames)" % (name, avatar.cycle_length()))
+        except Exception as exc:
+            print("could not restore avatar '%s': %s" % (name, exc))
+
+
+def prepare_avatar(state, avatar_id, video_path, bbox_shift):
+    from avatar import Avatar  # local module, see avatar.py
+
+    avatar = Avatar(state, avatar_id, video_path, bbox_shift)
+    avatar.prepare()
+    return avatar
+
+
+class StreamSession:
+    """One conversation's worth of audio in, frames out."""
+
+    def __init__(self, state, avatar, websocket):
+        self.state = state
+        self.avatar = avatar
+        self.websocket = websocket
+        self.buffer = bytearray()
+        self.frame_index = 0
+
+    async def run(self):
+        import numpy as np
+
+        min_bytes = int(AUDIO_SAMPLE_RATE * MIN_CHUNK_SECONDS) * 2
+
+        while True:
+            message = await self.websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                return
+
+            if "bytes" in message and message["bytes"]:
+                self.buffer.extend(message["bytes"])
+                if len(self.buffer) >= min_bytes:
+                    chunk = bytes(self.buffer)
+                    self.buffer.clear()
+                    await self._synthesize(np.frombuffer(chunk, dtype="<i2"))
+                continue
+
+            if "text" in message and message["text"]:
+                try:
+                    event = json.loads(message["text"])
+                except ValueError:
+                    continue
+                kind = event.get("type")
+                if kind == "flush":
+                    if self.buffer:
+                        chunk = bytes(self.buffer)
+                        self.buffer.clear()
+                        await self._synthesize(np.frombuffer(chunk, dtype="<i2"))
+                    await self.websocket.send_json({"type": "flushed"})
+                elif kind == "seek":
+                    # The panel loops the source clip while idle and hands over
+                    # the frame it is currently showing. Generating from that
+                    # index makes the switch to generated frames continuous
+                    # instead of snapping the pose back to the start.
+                    try:
+                        self.frame_index = int(event.get("index", 0))
+                    except (TypeError, ValueError):
+                        self.frame_index = 0
+                    await self.websocket.send_json(
+                        {"type": "seeked", "index": self.frame_index, "cycle": self.avatar.cycle_length()}
+                    )
+                elif kind == "reset":
+                    # Barge-in: drop queued audio so she stops mid-sentence
+                    # rather than finishing the interrupted turn. The frame
+                    # index is left alone - the body should carry on from where
+                    # it is, not jump.
+                    self.buffer.clear()
+                    await self.websocket.send_json({"type": "reset"})
+                elif kind == "close":
+                    return
+
+    async def _synthesize(self, pcm):
+        started = time.time()
+        try:
+            frames = await asyncio.to_thread(self.avatar.frames_for_audio, pcm, self.frame_index)
+        except Exception as exc:
+            # A chunk that cannot be turned into frames is reported and skipped.
+            # Letting it propagate tears down the WebSocket, which the panel can
+            # only see as the whole service having gone away.
+            traceback.print_exc()
+            await self.websocket.send_json(
+                {"type": "chunk_error", "message": "%s: %s" % (type(exc).__name__, exc)}
+            )
+            return
+        self.frame_index += len(frames)
+
+        for jpeg in frames:
+            await self.websocket.send_json(
+                {
+                    "type": "frame",
+                    "index": self.frame_index,
+                    "data": base64.b64encode(jpeg).decode("ascii"),
+                }
+            )
+
+        elapsed = time.time() - started
+        audio_seconds = len(pcm) / AUDIO_SAMPLE_RATE
+        await self.websocket.send_json(
+            {
+                "type": "stats",
+                "frames": len(frames),
+                "audio_seconds": round(audio_seconds, 3),
+                "elapsed": round(elapsed, 3),
+                # Below 1.0 means generation outruns playback, which is the
+                # condition for staying in sync.
+                "realtime_factor": round(elapsed / audio_seconds, 3) if audio_seconds else None,
+            }
+        )
+
+
+def main():
+    global STATE
+
+    parser = argparse.ArgumentParser(description="MuseTalk real-time service")
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--version", default="v15", choices=["v1", "v15"])
+    parser.add_argument("--unet_model_path", default=str(REPO / "models/musetalkV15/unet.pth"))
+    parser.add_argument("--unet_config", default=str(REPO / "models/musetalkV15/musetalk.json"))
+    parser.add_argument("--vae_type", default="sd-vae")
+    parser.add_argument("--whisper_dir", default=str(REPO / "models/whisper"))
+    parser.add_argument("--cache_dir", default=str(Path(__file__).resolve().parent / "cache"))
+    parser.add_argument("--fps", type=int, default=DEFAULT_FPS)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--extra_margin", type=int, default=10)
+    args = parser.parse_args()
+
+    if args.host is None:
+        args.host = "0.0.0.0" if read_lan_setting() else DEFAULT_HOST
+
+    os.makedirs(args.cache_dir, exist_ok=True)
+    os.chdir(REPO)
+
+    STATE = ServiceState(args)
+    print("loading models ...")
+    load_models(STATE)
+    print("models ready on %s" % STATE.device)
+    restore_cached_avatars(STATE)
+
+    import uvicorn
+
+    uvicorn.run(build_app(STATE), host=args.host, port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,801 @@
+"""Server for the companion panel: static files plus a small config API.
+
+Deliberately stdlib-only. The API surface is four endpoints against local
+files, so a web framework would add an install step for nothing. Binds to
+loopback only - none of this is meant to be reachable from the network.
+
+Serving over HTTP rather than opening index.html directly matters: ES modules,
+fetch() and AudioWorklet.addModule all fail under the file:// origin, and
+getUserMedia needs a secure context, which 127.0.0.1 counts as.
+
+Endpoints
+    GET  /api/characters          read characters.json
+    PUT  /api/characters          write characters.json (keeps one backup)
+    GET  /api/voices              list reference audio files
+    POST /api/voices?name=&start=&duration=
+                                  upload audio, normalise it for Qwen3-TTS
+    POST /api/transcribe?file=    transcribe a reference clip for ref_text
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import http.server
+import socketserver
+import urllib.error
+import urllib.parse
+import urllib.request
+
+import llm_router
+
+DEFAULT_PORT = 8900
+DEFAULT_HOST = "127.0.0.1"
+
+# Separate process, separate conda environment - see musetalk_service/.
+MUSETALK_URL = "http://127.0.0.1:8930"
+
+LOOPBACK = "127.0.0.1"
+ALL_INTERFACES = "0.0.0.0"
+
+
+def read_lan_setting(panel_dir):
+    """Whether the user opted into serving the whole network.
+
+    Defaults to loopback: the panel edits characters, uploads files and
+    proxies LLM calls with stored API keys, none of which should become
+    reachable by accident.
+    """
+    path = os.path.join(panel_dir, "settings.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        for group in data.get("groups", []):
+            for item in group.get("items", []):
+                if item.get("key") == "lan_access":
+                    return bool(item.get("value"))
+    except Exception:
+        pass
+    return False
+
+# Qwen3-TTS clones from a short clip. Much beyond this and quality drops
+# rather than improves, so the upload is trimmed instead of trusted.
+TARGET_SAMPLE_RATE = 24000
+MAX_CLIP_SECONDS = 15.0
+DEFAULT_CLIP_SECONDS = 10.0
+
+# Filenames come from the browser, so they are treated as hostile: anything
+# outside this pattern is rejected rather than sanitised, which avoids having
+# to reason about traversal tricks at all.
+SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
+
+EXTRA_TYPES = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".json": "application/json",
+    ".vrm": "model/gltf-binary",
+    ".glb": "model/gltf-binary",
+    ".wasm": "application/wasm",
+    ".wav": "audio/wav",
+}
+
+
+class PanelError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+class Paths:
+    """Resolved once at startup so handlers never build paths from input."""
+
+    def __init__(self, panel_dir):
+        self.panel = os.path.abspath(panel_dir)
+        self.root = os.path.dirname(self.panel)
+        self.characters = os.path.join(self.panel, "characters.json")
+        self.providers = os.path.join(self.panel, "providers.json")
+        self.settings = os.path.join(self.panel, "settings.json")
+        self.voices = os.path.join(self.root, "voices")
+        self.bin = os.path.join(self.root, "bin")
+        self.transcribe = os.path.join(self.panel, "transcribe.py")
+        if not os.path.isdir(self.voices):
+            os.makedirs(self.voices)
+
+
+PATHS = None
+STORE = None
+PYTHON = sys.executable
+
+
+def find_ffmpeg():
+    """Prefer the copy bundled in bin/ so the project stays self-contained.
+
+    Note the bundled binary must be a *static* build. Shared builds (the one
+    that ships with Anaconda, for instance) are a few hundred KB and fail with
+    STATUS_DLL_NOT_FOUND unless their avcodec/avformat DLLs happen to be on
+    PATH - which defeats the point of bundling.
+    """
+    bundled = os.path.join(PATHS.bin, "ffmpeg.exe")
+    if os.path.exists(bundled):
+        return bundled
+
+    found = shutil.which("ffmpeg")
+    if not found:
+        raise PanelError(
+            500,
+            "ffmpeg not found. Put a static build at bin/ffmpeg.exe or install it on PATH.",
+        )
+    return found
+
+
+# Lip sync is driven by parameters the model has to declare. A model without
+# them loads and animates perfectly well and simply never opens its mouth,
+# which is indistinguishable from a broken pipeline unless the list says so.
+VRM_VISEMES = ("aa", "ih", "ou", "ee", "oh")
+LIVE2D_MOUTH_PARAM = "ParamMouthOpenY"
+
+
+def read_glb_json(path, limit=32 * 1024 * 1024):
+    """Parse just the JSON chunk of a .vrm (a glTF binary).
+
+    Only the header and first chunk are read: these files run to tens of
+    megabytes and the answer is in the first few hundred kilobytes.
+    """
+    import struct
+
+    with open(path, "rb") as handle:
+        header = handle.read(12)
+        if len(header) < 12 or header[:4] != b"glTF":
+            return None
+        chunk_header = handle.read(8)
+        if len(chunk_header) < 8:
+            return None
+        length, kind = struct.unpack("<II", chunk_header)
+        if kind != 0x4E4F534A or length > limit:
+            return None
+        return json.loads(handle.read(length).decode("utf-8", "replace"))
+
+
+def vrm_has_visemes(path):
+    try:
+        doc = read_glb_json(path)
+        if not doc:
+            return None
+        extensions = doc.get("extensions", {})
+
+        # VRM 1.0
+        vrmc = extensions.get("VRMC_vrm")
+        if vrmc:
+            preset = (vrmc.get("expressions") or {}).get("preset") or {}
+            return all(name in preset for name in VRM_VISEMES)
+
+        # VRM 0.x uses single-letter preset names on blend shape groups.
+        vrm0 = extensions.get("VRM")
+        if vrm0:
+            groups = (vrm0.get("blendShapeMaster") or {}).get("blendShapeGroups") or []
+            names = {str(g.get("presetName", "")).lower() for g in groups}
+            return all(letter in names for letter in ("a", "i", "u", "e", "o"))
+    except Exception:
+        return None
+    return None
+
+
+def live2d_has_mouth(model3_path):
+    """Check the model's display-info file for the mouth parameter."""
+    try:
+        folder = os.path.dirname(model3_path)
+        with open(model3_path, "r", encoding="utf-8") as handle:
+            model = json.load(handle)
+
+        display = (model.get("FileReferences") or {}).get("DisplayInfo")
+        candidates = []
+        if display:
+            candidates.append(os.path.join(folder, display))
+        for name in sorted(os.listdir(folder)):
+            if name.lower().endswith(".cdi3.json"):
+                candidates.append(os.path.join(folder, name))
+
+        for candidate in candidates:
+            if not os.path.exists(candidate):
+                continue
+            with open(candidate, "r", encoding="utf-8") as handle:
+                info = json.load(handle)
+            ids = {p.get("Id") for p in info.get("Parameters", [])}
+            return LIVE2D_MOUTH_PARAM in ids
+    except Exception:
+        return None
+    return None
+
+
+def voice_path(name):
+    if not SAFE_NAME.match(name):
+        raise PanelError(400, "invalid voice name: letters, digits, _ and - only")
+    return os.path.join(PATHS.voices, name + ".wav")
+
+
+def audio_info(path):
+    """Return (duration, sample_rate, channels, subtype).
+
+    Uses soundfile rather than the stdlib wave module: a .wav extension says
+    nothing about the contents. The reference clip shipped with
+    speech-to-speech, for instance, is MP3 data inside a wav container, which
+    wave.open rejects outright.
+    """
+    try:
+        import soundfile as sf
+
+        info = sf.info(path)
+        return (
+            round(info.duration, 2),
+            info.samplerate,
+            info.channels,
+            info.subtype,
+        )
+    except Exception:
+        return (0.0, 0, 0, "unknown")
+
+
+def clip_is_normalised(sample_rate, channels, subtype, duration):
+    """Whether a clip already matches what Qwen3-TTS wants."""
+    return (
+        sample_rate >= TARGET_SAMPLE_RATE
+        and channels == 1
+        and str(subtype).startswith("PCM")
+        and 3.0 <= duration <= MAX_CLIP_SECONDS
+    )
+
+
+def convert_audio(source, target, start, duration):
+    """Normalise arbitrary uploaded audio into what the TTS expects."""
+    ffmpeg = find_ffmpeg()
+    duration = max(0.5, min(duration, MAX_CLIP_SECONDS))
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        "%.3f" % max(0.0, start),
+        "-i",
+        source,
+        "-t",
+        "%.3f" % duration,
+        "-ac",
+        "1",
+        "-ar",
+        str(TARGET_SAMPLE_RATE),
+        "-sample_fmt",
+        "s16",
+        target,
+    ]
+    result = subprocess.run(command, capture_output=True)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()[:400]
+        raise PanelError(400, "ffmpeg failed: " + (detail or "unknown error"))
+
+
+def transcribe_audio(path, language):
+    result = subprocess.run(
+        [PYTHON, PATHS.transcribe, path, language],
+        capture_output=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()[-400:]
+        raise PanelError(500, "transcription failed: " + (detail or "unknown error"))
+    return result.stdout.decode("utf-8", "replace").strip()
+
+
+def validate_characters(data):
+    if not isinstance(data, dict):
+        raise PanelError(400, "payload must be an object")
+    characters = data.get("characters")
+    if not isinstance(characters, dict) or not characters:
+        raise PanelError(400, "characters must be a non-empty object")
+
+    for key, value in characters.items():
+        if not isinstance(value, dict):
+            raise PanelError(400, "character %s must be an object" % key)
+        for field in ("label", "system_prompt"):
+            if not value.get(field):
+                raise PanelError(400, "character %s is missing %s" % (key, field))
+
+    if data.get("default") not in characters:
+        # Rather than reject, point it at something that exists: an unusable
+        # default would break the panel on next load.
+        data["default"] = sorted(characters)[0]
+    return data
+
+
+class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
+    # ---------- helpers ----------
+
+    def _send_json(self, payload, status=200):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_error_json(self, status, message):
+        self._send_json({"error": message}, status=status)
+
+    def _read_body(self, limit=64 * 1024 * 1024):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            raise PanelError(400, "empty body")
+        if length > limit:
+            raise PanelError(413, "body too large")
+        return self.rfile.read(length)
+
+    def _query(self):
+        return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+
+    def _param(self, name, default=None):
+        values = self._query().get(name)
+        return values[0] if values else default
+
+    # ---------- routing ----------
+
+    def do_GET(self):
+        route = urllib.parse.urlparse(self.path).path
+        if route.startswith("/api/"):
+            try:
+                self._handle_api_get(route)
+            except PanelError as exc:
+                self._send_error_json(exc.status, exc.message)
+            except Exception as exc:
+                self._send_error_json(500, str(exc))
+            return
+        super().do_GET()
+
+    def do_PUT(self):
+        try:
+            route = urllib.parse.urlparse(self.path).path
+            if route == "/api/characters":
+                self._put_characters()
+            elif route == "/api/llm":
+                payload = json.loads(self._read_body().decode("utf-8"))
+                STORE.update(payload)
+                self._send_json(STORE.public_view())
+            elif route == "/api/settings":
+                self._put_settings()
+            else:
+                raise PanelError(404, "unknown endpoint")
+        except llm_router.RouterError as exc:
+            self._send_error_json(exc.status, exc.message)
+        except PanelError as exc:
+            self._send_error_json(exc.status, exc.message)
+        except Exception as exc:
+            self._send_error_json(500, str(exc))
+
+    def do_POST(self):
+        try:
+            route = urllib.parse.urlparse(self.path).path
+            if route == "/api/voices":
+                self._post_voice()
+            elif route == "/api/transcribe":
+                self._post_transcribe()
+            elif route == "/v1/chat/completions":
+                self._proxy_chat()
+            elif route == "/api/musetalk/prepare":
+                self._prepare_musetalk()
+            else:
+                raise PanelError(404, "unknown endpoint")
+        except llm_router.RouterError as exc:
+            self._send_error_json(exc.status, exc.message)
+        except PanelError as exc:
+            self._send_error_json(exc.status, exc.message)
+        except Exception as exc:
+            self._send_error_json(500, str(exc))
+
+    def _proxy_chat(self):
+        """The endpoint speech-to-speech points at instead of a provider."""
+        body = self._read_body(limit=8 * 1024 * 1024)
+
+        def write_status(status, content_type):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            # The streamed body has no length, so the client must read to
+            # close. Saying so explicitly stops an HTTP client from keeping
+            # the connection in its pool and reusing one this server has
+            # already finished with.
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+        def write_chunk(chunk):
+            self.wfile.write(chunk)
+            # Flush per chunk: with streaming enabled the pipeline starts
+            # synthesising on the first sentence, so holding data here would
+            # add latency to every reply.
+            self.wfile.flush()
+
+        llm_router.proxy_chat(STORE, body, write_status, write_chunk)
+
+    # ---------- endpoints ----------
+
+    def _handle_api_get(self, route):
+        if route == "/api/characters":
+            with open(PATHS.characters, "r", encoding="utf-8") as handle:
+                self._send_json(json.load(handle))
+        elif route == "/api/voices":
+            self._send_json({"voices": self._list_voices()})
+        elif route == "/api/voice-file":
+            self._send_voice_file()
+        elif route == "/api/llm":
+            self._send_json(STORE.public_view())
+        elif route == "/api/assets":
+            self._send_json(self._list_assets())
+        elif route == "/api/settings":
+            with open(PATHS.settings, "r", encoding="utf-8") as handle:
+                self._send_json(json.load(handle))
+        elif route == "/api/musetalk/status":
+            self._musetalk_status()
+        elif route == "/api/llm/models":
+            self._send_json(llm_router.list_models(STORE, self._param("provider")))
+        else:
+            raise PanelError(404, "unknown endpoint")
+
+    def _send_voice_file(self):
+        """Stream a reference clip so the editor can preview it.
+
+        The voices folder sits outside the served directory, so it cannot be
+        reached as a static path - and it should not be, since that would also
+        expose everything else above the panel folder.
+        """
+        name = self._param("name")
+        if not name:
+            raise PanelError(400, "missing name parameter")
+        path = voice_path(name)
+        if not os.path.exists(path):
+            raise PanelError(404, "no such voice: " + name)
+
+        size = os.path.getsize(path)
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(size))
+        self.end_headers()
+        with open(path, "rb") as handle:
+            shutil.copyfileobj(handle, self.wfile)
+
+    def _list_assets(self):
+        """Everything the character editor can pick from, grouped by kind.
+
+        Scanned rather than typed: a path typed by hand is a path that can be
+        wrong, and the failure only shows up as a blank stage later.
+        Directories are reported too so the dialog can say where to put files.
+        """
+        panel = PATHS.panel
+
+        def relative(path):
+            return os.path.relpath(path, panel).replace("\\", "/")
+
+        def scan(subdir, suffixes):
+            root = os.path.join(panel, *subdir.split("/"))
+            found = []
+            if not os.path.isdir(root):
+                return found
+            for name in sorted(os.listdir(root)):
+                full = os.path.join(root, name)
+                if os.path.isfile(full) and name.lower().endswith(suffixes):
+                    entry = {
+                        "path": relative(full),
+                        "name": os.path.splitext(name)[0],
+                        "bytes": os.path.getsize(full),
+                    }
+                    if name.lower().endswith(".vrm"):
+                        entry["lipsync"] = vrm_has_visemes(full)
+                    found.append(entry)
+            return found
+
+        # Live2D models are folders, and the .model3.json is not reliably at
+        # the top of one. Official distributions ship the editor sources
+        # (.cmo3/.can3, which the browser cannot use) beside a runtime/
+        # subfolder holding the files that matter, so the search has to walk
+        # down rather than glance at the first level.
+        live2d = []
+        l2d_root = os.path.join(panel, "models", "live2d")
+        if os.path.isdir(l2d_root):
+            for name in sorted(os.listdir(l2d_root)):
+                folder = os.path.join(l2d_root, name)
+                if not os.path.isdir(folder):
+                    continue
+                found = None
+                for current, dirs, files in os.walk(folder):
+                    dirs.sort()
+                    for entry in sorted(files):
+                        if entry.lower().endswith(".model3.json"):
+                            found = os.path.join(current, entry)
+                            break
+                    if found:
+                        break
+                if found:
+                    live2d.append(
+                        {
+                            "path": relative(found),
+                            "name": name,
+                            "bytes": os.path.getsize(found),
+                            "lipsync": live2d_has_mouth(found),
+                        }
+                    )
+
+        return {
+            "vrm": {"dir": "panel\models\\", "items": scan("models", (".vrm",))},
+            "motion": {
+                "dir": "panel\models\motions\\",
+                "items": scan("models/motions", (".vrma",)),
+            },
+            "live2d": {"dir": "panel\models\live2d\<model>\\", "items": live2d},
+            "video": {
+                "dir": "panel\media\\",
+                "items": scan("media", (".mp4", ".webm", ".mov", ".mkv")),
+            },
+        }
+
+    def _list_voices(self):
+        entries = []
+        for name in sorted(os.listdir(PATHS.voices)):
+            if not name.lower().endswith(".wav"):
+                continue
+            full = os.path.join(PATHS.voices, name)
+            duration, rate, channels, subtype = audio_info(full)
+            entries.append(
+                {
+                    "name": os.path.splitext(name)[0],
+                    "path": full.replace("\\", "/"),
+                    "duration": duration,
+                    "sample_rate": rate,
+                    "channels": channels,
+                    "subtype": subtype,
+                    "normalised": clip_is_normalised(rate, channels, subtype, duration),
+                    "bytes": os.path.getsize(full),
+                }
+            )
+        return entries
+
+    def _put_characters(self):
+        try:
+            data = json.loads(self._read_body().decode("utf-8"))
+        except ValueError as exc:
+            raise PanelError(400, "invalid JSON: %s" % exc)
+
+        data = validate_characters(data)
+
+        # One backup is enough to undo a bad edit without turning the folder
+        # into a history of every save.
+        if os.path.exists(PATHS.characters):
+            shutil.copyfile(PATHS.characters, PATHS.characters + ".bak")
+
+        # Write to a temporary file first so an interrupted save cannot leave
+        # characters.json truncated - the panel would fail to load on start.
+        temp = PATHS.characters + ".tmp"
+        with open(temp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temp, PATHS.characters)
+
+        self._send_json({"ok": True})
+
+    def _post_voice(self):
+        name = self._param("name")
+        if not name:
+            raise PanelError(400, "missing name parameter")
+        target = voice_path(name)
+
+        try:
+            start = float(self._param("start", "0") or 0)
+        except ValueError:
+            start = 0.0
+        try:
+            duration = float(self._param("duration", str(DEFAULT_CLIP_SECONDS)) or DEFAULT_CLIP_SECONDS)
+        except ValueError:
+            duration = DEFAULT_CLIP_SECONDS
+
+        payload = self._read_body()
+        # Keep the original container: ffmpeg sniffs the format, and the
+        # browser may hand us mp3, m4a, webm or wav.
+        upload = os.path.join(PATHS.voices, "." + name + ".upload")
+        with open(upload, "wb") as handle:
+            handle.write(payload)
+
+        try:
+            convert_audio(upload, target, start, duration)
+        finally:
+            if os.path.exists(upload):
+                os.remove(upload)
+
+        duration, rate, channels, subtype = audio_info(target)
+        self._send_json(
+            {
+                "ok": True,
+                "name": name,
+                "path": target.replace("\\", "/"),
+                "duration": duration,
+                "sample_rate": rate,
+                "channels": channels,
+                "subtype": subtype,
+            }
+        )
+
+    def _put_settings(self):
+        """Apply value changes only.
+
+        The file is self-describing - labels, ranges and dependencies live
+        alongside the values so the UI can render itself - and none of that
+        should be writable from the browser. Only known keys get updated, and
+        only with a value of the declared type.
+        """
+        payload = json.loads(self._read_body().decode("utf-8"))
+        values = payload.get("values")
+        if not isinstance(values, dict):
+            raise PanelError(400, "values must be an object")
+
+        with open(PATHS.settings, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+
+        applied = {}
+        for group in data.get("groups", []):
+            for item in group.get("items", []):
+                key = item.get("key")
+                if key not in values:
+                    continue
+                raw = values[key]
+                kind = item.get("type")
+                if kind == "bool":
+                    item["value"] = bool(raw)
+                elif kind == "number":
+                    try:
+                        number = float(raw)
+                    except (TypeError, ValueError):
+                        raise PanelError(400, "%s must be a number" % key)
+                    low = item.get("min")
+                    high = item.get("max")
+                    if low is not None:
+                        number = max(number, float(low))
+                    if high is not None:
+                        number = min(number, float(high))
+                    item["value"] = number
+                else:
+                    item["value"] = str(raw)
+                applied[key] = item["value"]
+
+        temp = PATHS.settings + ".tmp"
+        with open(temp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write(chr(10))
+        os.replace(temp, PATHS.settings)
+
+        self._send_json({"ok": True, "applied": applied, "settings": data})
+
+    def _musetalk_status(self):
+        """Whether the lip-sync service is up, so the panel can say so."""
+        try:
+            with urllib.request.urlopen(MUSETALK_URL + "/health", timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            self._send_json({"up": True, "health": payload})
+        except Exception as exc:
+            self._send_json({"up": False, "error": str(exc)})
+
+    def _prepare_musetalk(self):
+        """Forward an avatar preparation request to the lip-sync service.
+
+        Proxied rather than called from the browser directly so the panel stays
+        the single origin the UI talks to, and so a video path is resolved
+        against the panel directory the same way every other asset is.
+        """
+        payload = json.loads(self._read_body().decode("utf-8"))
+        video = payload.get("video_path", "")
+        if video and not os.path.isabs(video):
+            resolved = os.path.abspath(os.path.join(PATHS.panel, video))
+            # Keep the lookup inside the panel folder: the path comes from the
+            # browser and would otherwise reach anywhere on disk.
+            if not resolved.startswith(PATHS.panel + os.sep):
+                raise PanelError(400, "video_path must stay inside the panel directory")
+            if not os.path.exists(resolved):
+                raise PanelError(404, "no such video: " + video)
+            payload["video_path"] = resolved.replace("\\", "/")
+
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            MUSETALK_URL + "/prepare",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            # Preparation is minutes of GPU work, so the timeout is generous.
+            with urllib.request.urlopen(request, timeout=1800) as response:
+                self._send_json(json.loads(response.read().decode("utf-8")))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise PanelError(exc.code, detail)
+        except Exception as exc:
+            raise PanelError(502, "lip-sync service unreachable: %s" % exc)
+
+    def _post_transcribe(self):
+        name = self._param("file")
+        if not name:
+            raise PanelError(400, "missing file parameter")
+        path = voice_path(name)
+        if not os.path.exists(path):
+            raise PanelError(404, "no such voice: " + name)
+        language = self._param("language", "zh")
+        self._send_json({"ok": True, "text": transcribe_audio(path, language)})
+
+    # ---------- static ----------
+
+    def guess_type(self, path):
+        _, ext = os.path.splitext(path)
+        override = EXTRA_TYPES.get(ext.lower())
+        if override is not None:
+            return override
+        return super().guess_type(path)
+
+    def end_headers(self):
+        # The panel is edited while it runs; caching would hide those edits
+        # behind a hard refresh every time.
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def log_message(self, fmt, *args):
+        # One line per request is noise for a single-user local panel, so only
+        # failures are surfaced.
+        status = args[1] if len(args) > 1 else ""
+        if isinstance(status, str) and status.startswith(("4", "5")):
+            sys.stderr.write("%s %s\n" % (self.requestline, status))
+
+
+class ReusableTCPServer(socketserver.ThreadingTCPServer):
+    # Without this a quick restart hits "address already in use" while the old
+    # socket sits in TIME_WAIT.
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def main():
+    global PATHS, STORE
+
+    parser = argparse.ArgumentParser(description="Serve the companion panel.")
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="Bind address. Defaults to the lan_access setting.",
+    )
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--root",
+        default=os.path.dirname(os.path.abspath(__file__)),
+        help="Directory to serve. Defaults to the panel directory.",
+    )
+    args = parser.parse_args()
+
+    PATHS = Paths(args.root)
+    STORE = llm_router.ProviderStore(PATHS.providers)
+    os.chdir(PATHS.panel)
+
+    host = args.host
+    if host is None:
+        host = ALL_INTERFACES if read_lan_setting(PATHS.panel) else LOOPBACK
+
+    with ReusableTCPServer((host, args.port), PanelRequestHandler) as httpd:
+        print("Panel serving %s" % PATHS.panel)
+        print("Voices in     %s" % PATHS.voices)
+        if host == ALL_INTERFACES:
+            print("Reachable from the local network on port %d." % args.port)
+            print("Anyone who can reach it can edit characters and use your API keys.")
+        print("LLM proxy at  http://%s:%d/v1/chat/completions" % (host, args.port))
+        print("Open http://%s:%d/" % (host or LOOPBACK, args.port))
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nPanel stopped.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,218 @@
+{
+  "_comment": "运行时设置。这个文件是自描述的：界面按 groups/items 自动生成，新增一个开关只要在这里加一条，不用改前端代码。type 支持 bool / number / select。",
+  "_depends": "depends 字段表示这一项只在某个条件成立时才显示，写法是另一项的 key，前面加 ! 表示取反。",
+  "groups": [
+    {
+      "id": "lipsync",
+      "label": "口型同步",
+      "help": "只影响「真人口型」显示方式的角色，其他显示方式不受影响。",
+      "items": [
+        {
+          "key": "head_inset",
+          "type": "bool",
+          "value": true,
+          "label": "左上角显示头部特写",
+          "help": "主画面看全身动作，角落放大头部看口型。仅对 3D 模型和 2D 立绘生效——真人素材上一个悬浮的脸部裁剪看着更像故障，而且逐帧裁剪会和视频解码抢主线程，加剧音画不同步。"
+        },
+        {
+          "key": "head_inset_zoom",
+          "type": "number",
+          "value": 2.2,
+          "min": 1.2,
+          "max": 5,
+          "step": 0.1,
+          "unit": "倍",
+          "label": "特写放大倍数",
+          "help": "调大看得更近。主画面里头部本来就小的话，放太大会糊。",
+          "depends": "head_inset"
+        },
+        {
+          "key": "wait_for_complete_turn",
+          "type": "bool",
+          "value": false,
+          "label": "等整句生成完再播放",
+          "help": "开启：音画严格同步，但要等这一句的画面全部生成完才开口，起播较慢。关闭：边生成边播，起播快，但生成一旦跟不上，画面会越落越多。"
+        },
+        {
+          "key": "lead_seconds",
+          "type": "number",
+          "value": 2.0,
+          "min": 0.2,
+          "max": 8,
+          "step": 0.1,
+          "unit": "秒",
+          "label": "边播模式的预缓冲",
+          "help": "关闭上面的开关后生效。播放前先攒多少秒画面。调大更稳，调小起播更快。",
+          "depends": "!wait_for_complete_turn"
+        },
+        {
+          "key": "max_wait_seconds",
+          "type": "number",
+          "value": 12,
+          "min": 2,
+          "max": 60,
+          "step": 1,
+          "unit": "秒",
+          "label": "等待上限",
+          "help": "开启等待模式时，万一服务没有回报生成完成，最多等这么久就先播出来，避免一直沉默。",
+          "depends": "wait_for_complete_turn"
+        }
+      ]
+    },
+    {
+      "id": "motion",
+      "label": "动作",
+      "help": "只影响 3D 模型。2D 立绘用的是模型自带的动作，会在每次回复时随机播一个。",
+      "items": [
+        {
+          "key": "motion_mode",
+          "type": "select",
+          "value": "auto",
+          "options": [
+            {
+              "value": "fixed",
+              "label": "固定 - 一直播角色设定的那个"
+            },
+            {
+              "value": "random",
+              "label": "随机 - 每次回复换一个"
+            },
+            {
+              "value": "auto",
+              "label": "按语境 - 根据她说的内容挑"
+            }
+          ],
+          "label": "动作选择方式",
+          "help": "「按语境」是拿她这句回复的文字匹配关键词，规则在 panel\\motions.json 里，可以自己改。不额外调用模型，所以不增加延迟。"
+        },
+        {
+          "key": "motion_once",
+          "type": "bool",
+          "value": false,
+          "label": "动作只播一次",
+          "help": "开启后动作播完停在最后一帧，适合鼓掌、跳跃这类有明确起止的动作。关闭则循环播放，适合待机类。",
+          "depends": "!motion_fixed_only"
+        }
+      ]
+    },
+    {
+      "id": "conversation",
+      "label": "对话",
+      "help": "",
+      "items": [
+        {
+          "key": "show_partial",
+          "type": "bool",
+          "value": true,
+          "label": "显示实时识别的文字",
+          "help": "你说话时在画面下方显示正在识别出的文字。"
+        },
+        {
+          "key": "keep_replay",
+          "type": "bool",
+          "value": true,
+          "label": "保留上一条回复用于重播",
+          "help": "缓存上一条回复的音频和画面帧，重播时不重新生成。关闭可以省一点内存。"
+        }
+      ]
+    },
+    {
+      "id": "network",
+      "label": "网络",
+      "help": "改动后需要重启服务才生效（scripts\\start-all.ps1）。",
+      "items": [
+        {
+          "key": "lan_access",
+          "type": "bool",
+          "value": false,
+          "label": "允许局域网访问",
+          "help": "关闭时只有本机能打开（127.0.0.1）。开启后同一网段的设备都能访问，包括改角色、上传文件，以及通过本机的代理调用你保存的 API key 消耗额度。请确认所在网络可信。"
+        }
+      ]
+    },
+    {
+      "id": "resources",
+      "label": "素材",
+      "help": "下载后放进对应目录，再到角色编辑里填路径：VRM 放 panel\\models\\，Live2D 放 panel\\models\\live2d\\，视频放 panel\\media\\。",
+      "items": [
+        {
+          "key": "links_vrm",
+          "type": "links",
+          "label": "3D 模型（VRM）",
+          "help": "VRoid Studio 可以自己捏人并导出 VRM，免费。下载别人的模型前请看清作者标注的使用条款。",
+          "links": [
+            {
+              "label": "VRoid Hub · 官方模型分享",
+              "url": "https://hub.vroid.com/"
+            },
+            {
+              "label": "VRoid Studio · 免费捏人工具",
+              "url": "https://vroid.com/studio"
+            },
+            {
+              "label": "BOOTH · 3D 模型区",
+              "url": "https://booth.pm/en/browse/3D%20Models"
+            },
+            {
+              "label": "ニコニ立体 · 免费模型",
+              "url": "https://3d.nicovideo.jp/"
+            },
+            {
+              "label": "VRM 规范文档",
+              "url": "https://vrm.dev/en/"
+            },
+            {
+              "label": "VRM Animation (.vrma) 规范",
+              "url": "https://vrm.dev/en/vrma/"
+            }
+          ]
+        },
+        {
+          "key": "links_live2d",
+          "type": "links",
+          "label": "2D 立绘（Live2D）",
+          "help": "官方示例模型可免费用于非商业用途。需要 .model3.json 及同目录的 moc3、贴图、动作文件。",
+          "links": [
+            {
+              "label": "Live2D 官方免费示例模型",
+              "url": "https://www.live2d.com/en/learn/sample/"
+            },
+            {
+              "label": "BOOTH · Live2D 模型区",
+              "url": "https://booth.pm/en/browse/3D%20Models"
+            }
+          ]
+        },
+        {
+          "key": "links_motion",
+          "type": "links",
+          "label": "动作文件（.vrma）",
+          "help": "项目里已经预置了 11 个动作（MIT 协议）在 panel\\models\\motions\\，角色编辑的「动作文件」里填 models/motions/Relax.vrma 这样的路径即可。想要更多可以从下面找，或用 Mixamo 的动作转换成 vrma。",
+          "links": [
+            {
+              "label": "BOOTH · 搜索 vrma 动作",
+              "url": "https://booth.pm/en/search/vrma"
+            },
+            {
+              "label": "预置动作的来源仓库（MIT）",
+              "url": "https://github.com/tk256ailab/vrm-viewer"
+            },
+            {
+              "label": "VRMA 在线编辑器",
+              "url": "https://github.com/nanasi-apps/vrm-animation-web-editor"
+            },
+            {
+              "label": "Mixamo · 免费动作库（需转换）",
+              "url": "https://www.mixamo.com/"
+            },
+            {
+              "label": "AnimationClip 转 VRMA 的示例工程",
+              "url": "https://github.com/malaybaku/AnimationClipToVrmaSample"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "_links": "type 为 links 的项显示为一组外部链接，只读，不会写回。"
+}

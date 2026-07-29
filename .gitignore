@@ -1,0 +1,25 @@
+# Model weights and third-party checkouts. Multi-gigabyte, and all of it is
+# re-downloadable from upstream. See docs/03-user-guide.md for where each piece
+# comes from.
+/models/
+/musetalk/
+/llama.cpp/
+/llama.cpp-cputest/
+/bin/
+/musetalk_service/cache/
+
+# Avatar assets the user drops in themselves: VRM models, Live2D packages,
+# motion clips, reference footage.
+/panel/models/
+/panel/media/
+
+# Scratch and runtime output.
+/download/
+/logs/
+/recordings/
+__pycache__/
+*.pyc
+*.bak
+
+# Local secrets: llm.json holds provider API keys.
+/panel/llm.json

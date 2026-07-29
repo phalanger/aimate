@@ -1,0 +1,209 @@
+# 用户指南
+
+本地离线运行的 3D 数字人语音伴侣。四个模型串成一条流水线，全程不联网、不需要
+API Key，对话内容不出本机。
+
+## 一、快速启动
+
+打开 PowerShell，执行：
+
+```powershell
+I:\ai\code\mate\scripts\start-all.ps1
+```
+
+看到 `OpenAI Realtime API starting on ws://127.0.0.1:8765/v1/realtime` 之后，
+浏览器打开：
+
+```text
+http://127.0.0.1:8900/
+```
+
+点「开始对话」，允许麦克风权限，就可以直接说话了。
+
+首次启动会自动下载 Whisper large-v3-turbo（约 1.6 GB），需要等几分钟。
+
+## 二、系统组成
+
+四层流水线，出问题时按这个顺序定位：
+
+| 层 | 组件 | 跑在哪 | 作用 |
+| --- | --- | --- | --- |
+| 1 VAD | Silero VAD v5 | CPU | 判断你什么时候说完 |
+| 2 STT | Whisper large-v3-turbo | GPU | 语音转文字 |
+| 3 LLM | Qwen3-14B-Q6（Ollama） | GPU | 生成回复 |
+| 4 TTS | Qwen3-TTS-1.7B-Base | GPU | 文字转语音（克隆音色） |
+
+前端是浏览器里的 three.js + three-vrm，渲染 VRM 3D 角色，用实际播放的音频包络
+驱动口型。
+
+三个进程与端口：
+
+| 进程 | 端口 | 脚本 |
+| --- | --- | --- |
+| Ollama（LLM） | 11700 | `scripts\check-llm.ps1`（只检查，不启动） |
+| speech-to-speech（语音流水线） | 8765 | `scripts\start-voice.ps1` |
+| 面板静态服务器 | 8900 | `scripts\start-panel.ps1` |
+
+Ollama 用 11700 而不是默认的 11434，因为本机 11428–11527 落在 Windows 保留端口
+区间里，用默认端口会报 `socket access forbidden`。`OLLAMA_HOST` 已持久化为用户
+环境变量，托盘程序会自动绑定这个端口。
+
+**Ollama 必须从它自己的安装目录启动**（托盘程序即可）。从本项目目录启动会让它
+加载到冲突的 ggml 库并崩溃，日志表现为显存 `0 B`、回退 CPU——看起来像显卡故障，
+其实不是。详见 README 的坑之一。
+
+## 三、换角色与换人格
+
+编辑 `panel\characters.json`，照着已有的复制一份即可。每个角色包含：
+
+| 字段 | 说明 |
+| --- | --- |
+| `label` / `subtitle` | 面板上显示的名字与副标题 |
+| `vrm` | VRM 模型路径，相对于 `panel\` 目录 |
+| `voice` | 参考音频的**绝对路径**，由服务端读取 |
+| `ref_text` | 参考音频的逐字转录，必须和音频内容一致 |
+| `emotion` | 待机表情：`neutral` / `happy` / `sad` / `angry` / `relaxed` |
+| `system_prompt` | 人格设定 |
+
+在面板上点角色即可切换，**人格和音色都是即时生效的，不用重启**——TTS 模型常驻显存，
+切换只是下发一条 `session.update`。换 VRM 模型需要重新加载几秒。
+
+### system_prompt 里那五条规则不能删
+
+每个角色的 prompt 末尾都有五条说话规则。这不是啰嗦，是必需的：
+
+大模型默认会输出 Markdown、编号列表、emoji 和「（轻轻笑了笑）」这类动作描写，
+而 TTS 会把这些**逐字读出来**。你会听到她一本正经地念「一、点、我很开心、括号、
+轻轻笑了笑、括号」。
+
+五条规则里第一条最关键——不限制长度的话，模型会输出一大段，TTS 一读就是三十秒，
+这期间你插不上话，对话就退化成了单向播报。
+
+## 四、换成你自己的音色
+
+Qwen3-TTS 靠一段参考音频克隆音色。音频质量直接决定听起来像真人还是像机器人。
+
+参考音频要求：
+
+- 5–10 秒（超过 15 秒效果反而变差）
+- 纯净人声，无背景音乐、无混响、无杂音
+- 单声道，24 kHz 以上，wav 格式
+- 语气要接近你想要的效果——参考音频平淡，克隆出来就平淡
+
+用 ffmpeg 从任意音频裁一段：
+
+```powershell
+ffmpeg -i 原始音频.mp3 -ss 00:00:12 -t 8 -ac 1 -ar 24000 I:\ai\code\mate\voices\xiaoman.wav
+```
+
+参数含义：`-ss 00:00:12` 从第 12 秒开始，`-t 8` 截取 8 秒，`-ac 1` 转单声道，
+`-ar 24000` 采样率 24 kHz。
+
+然后改两个地方，**必须成对修改**：
+
+1. `panel\characters.json` 里该角色的 `voice` 指向新 wav，`ref_text` 改成这段音频的
+   逐字转录。
+2. 如果要改默认音色，同时更新 `scripts\config.ps1` 里的 `$Global:RefAudio` 和
+   `$Global:RefText`。
+
+`ref_text` 和音频对不上会明显影响克隆质量，这是最容易忽略的一步。
+
+> **授权提醒**：三秒克隆音色这个能力很强，也很容易被滥用。不要未经同意克隆真人的
+> 声音，尤其是明星、主播或身边的人——这在很多地区已涉及法律风险。建议用自己录的
+> 音频，或公开数据集的样本。
+
+## 五、换 3D 形象
+
+当前用的是 three-vrm 官方示例模型 `panel\models\sample.vrm`，只是个测试用的素模。
+
+换成你想要的角色：
+
+1. 从 [VRoid Hub](https://hub.vroid.com/) 下载 VRM 模型，或用
+   [VRoid Studio](https://vroid.com/studio) 自己捏一个（免费，导出 VRM）。
+2. 放进 `panel\models\`。
+3. 改 `characters.json` 里该角色的 `vrm` 字段。
+
+VRM 0.x 和 1.0 两种规范都支持，代码里已经做了朝向归一化处理。
+
+口型同步靠的是 VRM 的 `aa`/`ih`/`ou`/`ee`/`oh` 五个表情通道，眨眼靠 `blink`。
+如果你的模型没有定义这些表情，嘴就不会动——这是模型本身的问题，不是代码问题。
+
+## 六、排错
+
+按流水线的四层顺序排查，一查一个准。
+
+| 现象 | 大概率原因 | 怎么修 |
+| --- | --- | --- |
+| `does not have a file named speech_tokenizer/config.json` | TTS 模型目录不完整 | 见下方「TTS 模型目录结构」 |
+| 面板打不开 | 面板服务器没启动 | 跑 `scripts\start-panel.ps1` |
+| 点「开始对话」报麦克风错误 | 浏览器没给权限 | 地址栏左侧允许麦克风，刷新页面 |
+| 报连不上语音服务 | 语音流水线没起来 | 跑 `scripts\start-voice.ps1`，看有没有报错 |
+| 说话完全没反应 | VAD 阈值太高 | `start-voice.ps1` 里 `--thresh` 从 0.4 降到 0.3 |
+| 环境噪音也能触发 | VAD 阈值太低 | `--thresh` 升到 0.5 |
+| 识别出文字但没有回复 | Ollama 没通 | 跑 `scripts\start-llm.ps1`，它会自检并打印回复 |
+| 有回复文字但没声音 | 参考音频路径错 | 检查 `characters.json` 里 `voice` 的绝对路径是否存在 |
+| 中文识别成英文或空白 | STT 用了 parakeet | 确认 `--stt whisper`，默认的 parakeet 不支持中文 |
+| 她把 markdown 和括号念出来 | system_prompt 规则被删了 | 补回那五条规则 |
+| 她一口气说三十秒 | 没限制回复长度 | 检查规则第一条还在不在 |
+| `CUDA out of memory` | 显存不够 | 关掉其他占显存的程序，或换更小的模型 |
+| 嘴不动但有声音 | VRM 模型没有口型表情 | 换一个定义了 `aa`/`ih`/`ou`/`ee`/`oh` 的模型 |
+| 她自己打断自己 | 回声消除失效 | 戴耳机；或确认浏览器允许了回声消除 |
+| 第一句话卡几秒 | 模型预热 | 正常现象，第二句起就快了 |
+
+### TTS 模型目录结构
+
+Qwen3-TTS 不只需要根目录的权重，还需要一个 `speech_tokenizer/` 子目录。
+只下载根目录文件会在加载时报 `does not have a file named
+speech_tokenizer/config.json`。完整结构：
+
+```text
+models\qwen3-tts-base\
+├── config.json
+├── configuration.json
+├── generation_config.json
+├── preprocessor_config.json
+├── tokenizer_config.json
+├── merges.txt
+├── vocab.json
+├── model.safetensors            3.86 GB
+└── speech_tokenizer\
+    ├── config.json
+    ├── configuration.json
+    ├── preprocessor_config.json
+    └── model.safetensors         682 MB
+```
+
+补下载缺失的子目录：
+
+```powershell
+$ms = "https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base/resolve/master/speech_tokenizer"
+$dst = "I:\ai\code\mate\models\qwen3-tts-base\speech_tokenizer"
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+foreach ($f in "config.json","configuration.json","preprocessor_config.json","model.safetensors") {
+    curl.exe -L -o "$dst\$f" "$ms/$f"
+}
+```
+
+### 调 VAD 的建议
+
+`--thresh` 在 0.35–0.45 之间试。这个一定要在你自己的麦克风上实测调整，
+每个人的收音环境差别很大。
+
+### 关于显存
+
+四个模型同时驻留显存约需 18 GB。24 GB 的卡跑得下，但如果同时开着别的
+AI 程序（比如 DFL、Stable Diffusion）就会不够。用 `nvidia-smi` 查当前占用：
+
+```powershell
+nvidia-smi --query-gpu=memory.used,memory.free --format=csv
+```
+
+## 七、已知限制
+
+- **实时字幕**：上游的 live transcription 是为 parakeet-tdt 设计的，中文用
+  Whisper 时可能没有流式partial 字幕，但最终字幕正常。
+- **打断**：靠浏览器的回声消除工作。用外放且音量很大时，可能出现她把自己的
+  声音当成你在说话。戴耳机可彻底避免。
+- **llama.cpp**：本机上预编译的 llama-server 二进制无法运行（`--version`
+  即崩溃，CUDA 版和 CPU 版都一样），所以 LLM 走 Ollama。这不影响功能，
+  两者提供的都是 OpenAI 兼容接口。

@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI</title>
+    <!-- Inline so the browser stops requesting /favicon.ico and 404-ing. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23e8a598' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23e8a598'/%3E%3C/svg%3E"
+    />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./vendor/three/three.module.js"
+        }
+      }
+    </script>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="stage-wrap">
+        <div class="glow" aria-hidden="true"></div>
+        <!-- Filled by whichever renderer the active character selects. -->
+        <div id="stage" class="stage"></div>
+        <!-- Head close-up. Filled by copying a crop of whatever the active
+             renderer drew, so it works for all of them without each one
+             having to render a second time. -->
+        <canvas id="stage-inset" class="stage-inset" hidden></canvas>
+
+        <header class="overlay-top">
+          <h1 id="app-title"></h1>
+          <div class="status-chip">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="status" data-tone="idle"></span>
+          </div>
+        </header>
+
+        <div class="overlay-bottom">
+          <p id="partial" class="partial"></p>
+
+          <form id="compose" class="compose" hidden>
+            <input
+              id="compose-input"
+              type="text"
+              autocomplete="off"
+              maxlength="200"
+            />
+            <button id="compose-send" type="submit" class="send"></button>
+          </form>
+
+          <div class="controls">
+            <button id="connect" type="button" class="primary"></button>
+            <button id="mute" type="button" class="ghost" data-active="false"></button>
+          </div>
+          <p id="notice" class="notice" hidden></p>
+          <div id="error-box" class="error" hidden>
+            <span id="error"></span>
+            <button id="error-retry" type="button" class="ghost small" hidden></button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="panel">
+          <div class="panel-head">
+            <button id="characters-toggle" type="button" class="panel-toggle">
+              <span class="chevron" aria-hidden="true"></span>
+              <h2 id="characters-title"></h2>
+            </button>
+            <button id="character-new" type="button" class="icon-btn" title="+">+</button>
+          </div>
+          <div id="characters-body" class="panel-body">
+            <div id="characters" class="character-list"></div>
+            <p id="hint-switch" class="hint"></p>
+          </div>
+        </div>
+
+        <div class="panel panel-grow">
+          <div class="panel-head">
+            <h2 id="transcript-title"></h2>
+            <button id="replay" type="button" class="icon-btn" disabled></button>
+          </div>
+          <div class="speaking-as">
+            <span id="character-name"></span>
+          </div>
+          <div id="transcript" class="transcript"></div>
+          <p id="hint-interrupt" class="hint"></p>
+        </div>
+
+        <button id="llm-button" type="button" class="llm-button">
+          <span class="llm-dot" aria-hidden="true"></span>
+          <span class="llm-text">
+            <span id="llm-provider" class="llm-provider"></span>
+            <span id="llm-model" class="llm-model"></span>
+          </span>
+        </button>
+      </aside>
+    </main>
+
+    <div id="editor-backdrop" class="backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <header class="modal-head">
+          <h2 id="editor-title"></h2>
+          <button id="editor-close" type="button" class="icon-btn">&times;</button>
+        </header>
+
+        <div class="modal-body">
+          <label class="field">
+            <span id="lb-name"></span>
+            <input id="ed-label" type="text" maxlength="24" />
+          </label>
+
+          <label class="field">
+            <span id="lb-subtitle"></span>
+            <input id="ed-subtitle" type="text" maxlength="32" />
+          </label>
+
+          <label class="field">
+            <span id="lb-prompt"></span>
+            <textarea id="ed-prompt" rows="9"></textarea>
+          </label>
+          <button id="ed-rules" type="button" class="ghost small"></button>
+
+          <div class="field">
+            <span id="lb-voice"></span>
+            <div class="row">
+              <select id="ed-voice"></select>
+              <button id="ed-play" type="button" class="ghost small"></button>
+            </div>
+            <p id="ed-voice-info" class="field-note"></p>
+          </div>
+
+          <div class="field upload-box">
+            <span id="lb-upload"></span>
+            <input id="ed-file" type="file" accept="audio/*,video/*" />
+            <div class="row">
+              <label class="mini"
+                ><span id="lb-start"></span
+                ><input id="ed-start" type="number" min="0" step="0.5" value="0"
+              /></label>
+              <label class="mini"
+                ><span id="lb-duration"></span
+                ><input id="ed-duration" type="number" min="1" max="15" step="0.5" value="10"
+              /></label>
+              <button id="ed-upload" type="button" class="ghost small"></button>
+            </div>
+            <p id="ed-upload-status" class="field-note"></p>
+          </div>
+
+          <div class="field">
+            <div class="row row-between">
+              <span id="lb-avatar"></span>
+              <button id="ed-rescan" type="button" class="ghost small"></button>
+            </div>
+            <div id="ed-avatar-types" class="provider-grid"></div>
+          </div>
+
+          <label class="field" id="ed-vrm-field">
+            <span id="lb-vrm"></span>
+            <select id="ed-vrm"></select>
+            <p id="dir-vrm" class="field-note"></p>
+          </label>
+
+          <label class="field" id="ed-motion-field">
+            <span id="lb-motion"></span>
+            <select id="ed-motion"></select>
+            <p id="dir-motion" class="field-note"></p>
+          </label>
+
+          <label class="field" id="ed-live2d-field">
+            <span id="lb-live2d"></span>
+            <select id="ed-live2d"></select>
+            <p id="dir-live2d" class="field-note"></p>
+          </label>
+
+          <div class="field" id="ed-video-field">
+            <label class="field">
+              <span id="lb-idle-video"></span>
+              <select id="ed-idle-video"></select>
+            </label>
+            <label class="field">
+              <span id="lb-talk-video"></span>
+              <select id="ed-talk-video"></select>
+            </label>
+            <p id="lb-video-note" class="field-note"></p>
+          </div>
+
+          <div class="field" id="ed-musetalk-field">
+            <label class="field">
+              <span id="lb-mt-video"></span>
+              <select id="ed-mt-video"></select>
+            </label>
+            <label class="field">
+              <span id="lb-mt-id"></span>
+              <input id="ed-mt-id" type="text" spellcheck="false" />
+            </label>
+            <div class="row">
+              <button id="ed-mt-prepare" type="button" class="ghost small"></button>
+            </div>
+            <p id="ed-mt-status" class="field-note"></p>
+            <p id="lb-mt-note" class="field-note"></p>
+          </div>
+
+          <label class="field">
+            <span id="lb-reftext"></span>
+            <textarea id="ed-reftext" rows="3"></textarea>
+          </label>
+          <button id="ed-transcribe" type="button" class="ghost small"></button>
+          <p id="ed-transcribe-status" class="field-note"></p>
+
+          <p id="editor-error" class="error" hidden></p>
+        </div>
+
+        <footer class="modal-foot">
+          <button id="ed-delete" type="button" class="danger"></button>
+          <div class="spacer"></div>
+          <button id="ed-cancel" type="button" class="ghost"></button>
+          <button id="ed-save" type="button" class="primary"></button>
+        </footer>
+      </div>
+    </div>
+
+    <div id="settings-backdrop" class="backdrop" hidden>
+      <div class="modal modal-wide" role="dialog" aria-modal="true">
+        <header class="modal-head">
+          <h2 id="settings-title"></h2>
+          <button id="settings-close" type="button" class="icon-btn">&times;</button>
+        </header>
+
+        <div class="settings-layout">
+          <nav id="settings-nav" class="settings-nav"></nav>
+
+          <div class="modal-body">
+            <section id="section-llm" class="settings-section">
+          <div class="field">
+            <span id="lb-provider"></span>
+            <div id="llm-providers" class="provider-grid"></div>
+          </div>
+
+          <p id="llm-hint" class="field-note"></p>
+
+          <label class="field">
+            <span id="lb-baseurl"></span>
+            <input id="llm-baseurl" type="text" spellcheck="false" />
+          </label>
+
+          <label class="field" id="llm-key-field">
+            <span id="lb-key"></span>
+            <input id="llm-key" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+
+          <div class="field">
+            <span id="lb-model"></span>
+            <div class="row">
+              <select id="llm-model-select"></select>
+              <button id="llm-fetch" type="button" class="ghost small"></button>
+            </div>
+            <input id="llm-model-manual" type="text" spellcheck="false" />
+            <p id="llm-model-status" class="field-note"></p>
+          </div>
+
+          <p id="llm-error" class="error" hidden></p>
+        </section>
+            <!-- Generic sections are built from settings.json, so adding a
+                 switch there needs no markup and no code here. -->
+            <div id="settings-generic"></div>
+          </div>
+        </div>
+
+        <footer class="modal-foot">
+          <button id="llm-test" type="button" class="ghost"></button>
+          <div class="spacer"></div>
+          <button id="llm-cancel" type="button" class="ghost"></button>
+          <button id="llm-save" type="button" class="primary"></button>
+        </footer>
+      </div>
+    </div>
+
+    <audio id="preview" hidden></audio>
+
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>
