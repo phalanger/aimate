@@ -72,6 +72,9 @@ const state = {
   retryTimer: null,
   retryAction: null,
   services: { voice: false, lipsync: false },
+  // Whether the poll has ever reported. Until it has, "lipsync is up"
+  // is a first sighting, not an arrival.
+  observed: false,
   polling: false,
 };
 
@@ -230,8 +233,10 @@ function watchServices() {
       // The panel itself is unreachable; leave everything marked down.
     }
 
+    const seenBefore = state.observed;
     const wasLipsyncUp = state.services.lipsync;
     state.services = services;
+    state.observed = true;
     const needed = neededServices();
 
     const button = el("connect");
@@ -259,7 +264,11 @@ function watchServices() {
     }
 
     // It just arrived: mount against it rather than waiting to be asked.
-    if (needed.lipsync && services.lipsync && !wasLipsyncUp) {
+    // Only on a real transition. On the first report everything looks like
+    // it just appeared, and remounting then fights the mount that
+    // selecting the character already started - two sockets, and a
+    // "reconnecting" message on a page that was fine.
+    if (seenBefore && needed.lipsync && services.lipsync && !wasLipsyncUp) {
       state.autoRetries = 0;
       retryRenderer();
     }

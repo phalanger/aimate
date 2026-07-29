@@ -297,6 +297,9 @@ class Supervisor:
         self.by_id = {service.id: service for service in services}
         self.running = True
         self.lock = threading.Lock()
+        # Services now start concurrently, so the status file is written
+        # from several threads.
+        self.status_lock = threading.Lock()
 
         if not os.path.isdir(LOG_DIR):
             os.makedirs(LOG_DIR)
@@ -311,8 +314,7 @@ class Supervisor:
     def _write_status(self):
         try:
             folder = os.path.dirname(STATUS_FILE)
-            if not os.path.isdir(folder):
-                os.makedirs(folder)
+            os.makedirs(folder, exist_ok=True)
             payload = {
                 "done": self.done,
                 "services": [
@@ -326,11 +328,13 @@ class Supervisor:
                 ],
             }
             temp = STATUS_FILE + ".tmp"
-            with open(temp, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False)
             # Replaced atomically: the shell polls this file several times a
-            # second and must never read a half-written one.
-            os.replace(temp, STATUS_FILE)
+            # second and must never read a half-written one. The lock keeps
+            # two services reaching ready at once from sharing the temp file.
+            with self.status_lock:
+                with open(temp, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False)
+                os.replace(temp, STATUS_FILE)
         except Exception:
             # Progress reporting is not worth failing a startup over.
             pass
@@ -449,50 +453,92 @@ class Supervisor:
 
     # ---------- orchestration ----------
 
-    def start_all(self):
-        for service in self.services:
-            if not self.running:
-                return False
+    def _bring_up(self, service):
+        """Start one service and wait for it to answer. True if it is usable."""
+        if not service.managed:
+            up = probe(service.ready)
+            state = "up" if up else "not running"
+            self.say(service, "%s (external) - %s" % (service.label, state), "32" if up else "33")
+            if not up and service.note:
+                self.say(service, service.note, "90")
+            self.mark(service, "ready" if up else "failed")
+            return up
 
+        if probe(service.ready) and service.ready.get("type") != "none":
+            self.say(service, "%s already running, adopting it" % service.label, "32")
+            self.mark(service, "ready")
+            return True
+
+        self.say(service, "starting %s ..." % service.label, "36")
+        self.mark(service, "starting")
+        if not self.spawn(service):
+            self.mark(service, "failed")
+            return False
+
+        if self.wait_ready(service):
+            self.say(service, "ready", "32")
+            self.mark(service, "ready")
+            return True
+
+        self.say(service, "did not become ready in %.0fs" % service.ready_timeout, "91")
+        self.mark(service, "failed")
+        return False
+
+    def start_all(self):
+        """Start everything, each service as soon as its own needs are met.
+
+        Started one after another, the lip-sync service and the voice pipeline
+        added up: about thirty-five seconds each, and the second spent the
+        first thirty-five doing nothing. They do not depend on each other -
+        only the pipeline depends on the panel - so they run at the same time
+        and the wait is the longer of the two rather than the sum.
+
+        Waves would not have been enough: a wave holds the pipeline until the
+        whole first wave is done, which includes the lip-sync service it has
+        no need of. Each service waits on its own dependencies instead.
+        """
+        done = {service.id: threading.Event() for service in self.services}
+        ok = {}
+
+        def run(service):
             for need in service.depends_on:
-                other = self.by_id.get(need)
-                if other and other.managed and (not other.process or other.process.poll() is not None):
+                event = done.get(need)
+                if event is None:
+                    continue
+                event.wait()
+                if not ok.get(need):
                     self.say(service, "skipped: %s is not running" % need, "91")
                     self.mark(service, "failed")
-                    if not service.optional:
-                        return False
-
-            if not service.managed:
-                up = probe(service.ready)
-                state = "up" if up else "not running"
-                colour = "32" if up else "33"
-                self.say(service, "%s (external) - %s" % (service.label, state), colour)
-                if not up and service.note:
-                    self.say(service, service.note, "90")
-                self.mark(service, "ready" if up else "failed")
-                continue
-
-            if probe(service.ready) and service.ready.get("type") != "none":
-                self.say(service, "%s already running, adopting it" % service.label, "32")
-                self.mark(service, "ready")
-                continue
-
-            self.say(service, "starting %s ..." % service.label, "36")
-            self.mark(service, "starting")
-            if not self.spawn(service):
+                    ok[service.id] = False
+                    done[service.id].set()
+                    return
+            if not self.running:
+                ok[service.id] = False
+                done[service.id].set()
+                return
+            try:
+                ok[service.id] = self._bring_up(service)
+            except Exception as exc:
+                self.say(service, "failed to start: %s" % exc, "91")
                 self.mark(service, "failed")
-                if service.optional:
-                    continue
+                ok[service.id] = False
+            finally:
+                # Set even on failure, or anything waiting on it would hang.
+                done[service.id].set()
+
+        threads = [
+            threading.Thread(target=run, args=(service,), daemon=True)
+            for service in self.services
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        # Optional services are allowed to be missing; the rest are not.
+        for service in self.services:
+            if not service.optional and not ok.get(service.id):
                 return False
-
-            if self.wait_ready(service):
-                self.say(service, "ready", "32")
-                self.mark(service, "ready")
-            else:
-                self.say(service, "did not become ready in %.0fs" % service.ready_timeout, "91")
-                self.mark(service, "failed")
-                if not service.optional:
-                    return False
         return True
 
     def finish_startup(self, ok):
