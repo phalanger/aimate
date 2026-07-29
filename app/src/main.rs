@@ -53,6 +53,11 @@ const READY_TIMEOUT: Duration = Duration::from_secs(600);
 // on launch, another for taskkill on the way out.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+// 64x64 RGBA, straight from scripts/make-icon.py. Kept as raw pixels rather
+// than decoding the .ico at runtime, so the shell needs no image decoder for
+// one small square it already knows the shape of.
+const WINDOW_ICON: &[u8] = include_bytes!("../icon-64.rgba");
+
 #[derive(Debug)]
 enum UserEvent {
     /// Startup progress, as JSON, to render on the loading screen.
@@ -306,10 +311,18 @@ fn main() -> wry::Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
+    // The embedded resource gives the file its icon in Explorer and on the
+    // taskbar, but not the one in the title bar: the toolkit registers its own
+    // window class, which defaults to the system application icon. So the same
+    // artwork is also handed to the window directly, as raw pixels - both come
+    // out of scripts/make-icon.py and cannot drift apart.
+    let icon = tao::window::Icon::from_rgba(WINDOW_ICON.to_vec(), 64, 64).ok();
+
     let saved = load_geometry(&root);
     let (width, height) = saved.map(|(w, h, _)| (w, h)).unwrap_or((1280.0, 800.0));
     let mut builder = WindowBuilder::new()
         .with_title("AI")
+        .with_window_icon(icon)
         .with_inner_size(tao::dpi::LogicalSize::new(width, height));
     if let Some((_, _, Some((x, y)))) = saved {
         builder = builder.with_position(tao::dpi::LogicalPosition::new(x, y));
