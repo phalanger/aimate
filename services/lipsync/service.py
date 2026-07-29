@@ -94,7 +94,7 @@ class ServiceState:
         self.avatars = {}
         self.lock = asyncio.Lock()
 
-        # Populated by load_models().
+        # Populated by load_models(). Which half is used depends on --backend.
         self.vae = None
         self.unet = None
         self.pe = None
@@ -104,11 +104,41 @@ class ServiceState:
         self.timesteps = None
         self.device = None
 
+        # FlashHead: one pipeline shared by every avatar, re-armed on the way
+        # into each turn, so it has to remember which avatar it is holding.
+        self.pipeline = None
+        self.infer_params = None
+        self.active_avatar = None
+
 
 STATE = None
 
 
+def backend(state):
+    """The module implementing the selected backend.
+
+    Imported on demand: avatar.py pulls in MuseTalk at module level and
+    flashhead_avatar.py pulls in the FlashHead checkout, and neither import can
+    succeed in the other's conda environment.
+    """
+    if state.args.backend == "flashhead":
+        import flashhead_avatar
+
+        return flashhead_avatar
+
+    import avatar
+
+    return avatar
+
+
 def load_models(state):
+    if state.args.backend == "flashhead":
+        backend(state).load_models(state)
+        return
+    _load_musetalk_models(state)
+
+
+def _load_musetalk_models(state):
     """Load the inference-time models. Preprocessing models load lazily."""
     import torch
 
@@ -184,7 +214,12 @@ def build_app(state):
         async with state.lock:
             try:
                 avatar = await asyncio.to_thread(
-                    prepare_avatar, state, avatar_id, video_path, payload.get("bbox_shift", 0)
+                    prepare_avatar,
+                    state,
+                    avatar_id,
+                    video_path,
+                    payload.get("bbox_shift", 0),
+                    payload.get("idle_video", ""),
                 )
             except Exception as exc:
                 traceback.print_exc()
@@ -227,7 +262,8 @@ def restore_cached_avatars(state):
     Preparation results live on disk, so a restart should not force the user
     back through a two-minute rebuild for work that is already done.
     """
-    from avatar import Avatar
+    Avatar = backend(state).Avatar
+    wanted = "flashhead" if state.args.backend == "flashhead" else "musetalk"
 
     cache_dir = state.args.cache_dir
     if not os.path.isdir(cache_dir):
@@ -240,7 +276,22 @@ def restore_cached_avatars(state):
         try:
             with open(info_path, "r", encoding="utf-8") as handle:
                 info = json.load(handle)
-            avatar = Avatar(state, name, info.get("video_path", ""), info.get("bbox_shift", 0))
+            # Both backends cache under var/cache-lipsync, and their contents
+            # are not interchangeable. Anything built by the other one is
+            # skipped rather than half-loaded. (MuseTalk's caches predate the
+            # field, so a missing backend means musetalk.)
+            if info.get("backend", "musetalk") != wanted:
+                continue
+            if wanted == "flashhead":
+                avatar = Avatar(
+                    state,
+                    name,
+                    info.get("video_path", ""),
+                    info.get("bbox_shift", 0),
+                    idle_video=info.get("idle_video", ""),
+                )
+            else:
+                avatar = Avatar(state, name, info.get("video_path", ""), info.get("bbox_shift", 0))
             if not avatar.is_cached():
                 continue
             avatar.load()
@@ -250,10 +301,12 @@ def restore_cached_avatars(state):
             print("could not restore avatar '%s': %s" % (name, exc))
 
 
-def prepare_avatar(state, avatar_id, video_path, bbox_shift):
-    from avatar import Avatar  # local module, see avatar.py
-
-    avatar = Avatar(state, avatar_id, video_path, bbox_shift)
+def prepare_avatar(state, avatar_id, video_path, bbox_shift, idle_video=""):
+    Avatar = backend(state).Avatar
+    if state.args.backend == "flashhead":
+        avatar = Avatar(state, avatar_id, video_path, bbox_shift, idle_video=idle_video)
+    else:
+        avatar = Avatar(state, avatar_id, video_path, bbox_shift)
     avatar.prepare()
     return avatar
 
@@ -297,6 +350,10 @@ class StreamSession:
                         chunk = bytes(self.buffer)
                         self.buffer.clear()
                         await self._synthesize(np.frombuffer(chunk, dtype="<i2"))
+                    # A backend that generates in fixed-length slices holds back
+                    # whatever did not fill one. Without this the last fraction
+                    # of a second of every reply would be silent-mouthed.
+                    await self._flush_tail()
                     await self.websocket.send_json({"type": "flushed"})
                 elif kind == "seek":
                     # The panel loops the source clip while idle and hands over
@@ -307,6 +364,13 @@ class StreamSession:
                         self.frame_index = int(event.get("index", 0))
                     except (TypeError, ValueError):
                         self.frame_index = 0
+                    # A generating backend has no source frame to seek to, but
+                    # it does need to know a turn is starting, so it can drop
+                    # the motion state left over from the previous one and open
+                    # on the same pose the idle clip was just showing.
+                    begin = getattr(self.avatar, "begin_turn", None)
+                    if begin is not None:
+                        await asyncio.to_thread(begin)
                     await self.websocket.send_json(
                         {"type": "seeked", "index": self.frame_index, "cycle": self.avatar.cycle_length()}
                     )
@@ -319,6 +383,28 @@ class StreamSession:
                     await self.websocket.send_json({"type": "reset"})
                 elif kind == "close":
                     return
+
+    async def _flush_tail(self):
+        tail = getattr(self.avatar, "flush_tail", None)
+        if tail is None:
+            return
+        try:
+            frames = await asyncio.to_thread(tail)
+        except Exception as exc:
+            traceback.print_exc()
+            await self.websocket.send_json(
+                {"type": "chunk_error", "message": "%s: %s" % (type(exc).__name__, exc)}
+            )
+            return
+        self.frame_index += len(frames)
+        for jpeg in frames:
+            await self.websocket.send_json(
+                {
+                    "type": "frame",
+                    "index": self.frame_index,
+                    "data": base64.b64encode(jpeg).decode("ascii"),
+                }
+            )
 
     async def _synthesize(self, pcm):
         started = time.time()
@@ -362,10 +448,25 @@ class StreamSession:
 def main():
     global STATE
 
-    parser = argparse.ArgumentParser(description="MuseTalk real-time service")
+    parser = argparse.ArgumentParser(description="real-time lip-sync service")
+    # Which model generates the frames. The two cannot share a process - one
+    # pins torch 2.0.1 and the other needs 2.7.1 - so this is fixed at launch
+    # and only the chosen backend's module is ever imported. See
+    # docs/05-lipsync-spike.md for why flashhead is the default.
+    parser.add_argument("--backend", default="flashhead", choices=["musetalk", "flashhead"])
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--version", default="v15", choices=["v1", "v15"])
+    parser.add_argument("--flashhead_repo", default=str(ROOT / "runtime" / "flashhead"))
+    parser.add_argument(
+        "--flashhead_ckpt",
+        default=str(ROOT / "runtime" / "flashhead" / "models" / "SoulX-FlashHead-1_3B"),
+    )
+    parser.add_argument("--flashhead_model", default="lite", choices=["lite", "pro"])
+    parser.add_argument(
+        "--wav2vec_dir",
+        default=str(ROOT / "runtime" / "flashhead" / "models" / "wav2vec2-base-960h"),
+    )
     parser.add_argument("--unet_model_path", default=str(REPO / "models/musetalkV15/unet.pth"))
     parser.add_argument("--unet_config", default=str(REPO / "models/musetalkV15/musetalk.json"))
     parser.add_argument("--vae_type", default="sd-vae")
@@ -382,10 +483,11 @@ def main():
         args.host = "0.0.0.0" if read_lan_setting() else DEFAULT_HOST
 
     os.makedirs(args.cache_dir, exist_ok=True)
-    os.chdir(REPO)
+    if args.backend == "musetalk":
+        os.chdir(REPO)
 
     STATE = ServiceState(args)
-    print("loading models ...")
+    print("loading models (%s) ..." % args.backend)
     load_models(STATE)
     print("models ready on %s" % STATE.device)
     restore_cached_avatars(STATE)

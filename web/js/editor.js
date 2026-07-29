@@ -457,7 +457,14 @@ export class CharacterEditor {
       const response = await fetch("/api/musetalk/prepare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatar_id: avatarId, video_path: video }),
+        // idle_video goes along because the FlashHead backend frames the
+        // reference still to match it - without it every reply would start
+        // with the face jumping to a different size.
+        body: JSON.stringify({
+          avatar_id: avatarId,
+          video_path: video,
+          idle_video: (this.avatar || {}).idle_video || "",
+        }),
       });
       const data = await response.json();
       if (!response.ok) {

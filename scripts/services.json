@@ -14,6 +14,7 @@
   "vars": {
     "python_s2s": "D:\\Apps\\anaconda3\\envs\\s2s\\python.exe",
     "python_musetalk": "D:\\Apps\\anaconda3\\envs\\musetalk\\python.exe",
+    "python_flashhead": "D:\\Apps\\anaconda3\\envs\\flashhead\\python.exe",
     "ollama_host": "127.0.0.1:11700",
     "panel_port": "8900",
     "voice_port": "8765",
@@ -57,12 +58,14 @@
     },
     {
       "id": "lipsync",
-      "label": "口型服务（MuseTalk）",
-      "note": "只有显示方式为「真人口型」的角色才用得上。自己一个 conda 环境：它要 torch 2.0.1+cu118，语音流水线要 torch 2.9.1+cu128。",
+      "label": "口型服务（FlashHead）",
+      "note": "只有显示方式为「真人口型」的角色才用得上。自己一个 conda 环境：它要 torch 2.7.1+cu128，语音流水线要 torch 2.9.1+cu128，MuseTalk 又要 2.0.1+cu118。换回 MuseTalk 就把 --backend 改成 musetalk、python 换成 {python_musetalk}。对比数据见 docs/05-lipsync-spike.md。",
       "optional": true,
       "command": [
-        "{python_musetalk}",
-        "{root}\\services\\lipsync\\service.py"
+        "{python_flashhead}",
+        "{root}\\services\\lipsync\\service.py",
+        "--backend",
+        "flashhead"
       ],
       "cwd": "{root}",
       "env": {

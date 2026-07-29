@@ -800,16 +800,22 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         against the panel directory the same way every other asset is.
         """
         payload = json.loads(self._read_body().decode("utf-8"))
-        video = payload.get("video_path", "")
-        if video and not os.path.isabs(video):
-            resolved = os.path.abspath(os.path.join(PATHS.root, video))
+
+        # video_path is the source clip for MuseTalk and the reference still for
+        # FlashHead; idle_video is the clip the panel loops between turns, which
+        # FlashHead needs so it can frame the still to match it.
+        for field in ("video_path", "idle_video"):
+            value = payload.get(field, "")
+            if not value or os.path.isabs(value):
+                continue
+            resolved = os.path.abspath(os.path.join(PATHS.root, value))
             # Keep the lookup inside the assets folder: the path comes from the
             # browser and would otherwise reach anywhere on disk.
             if not resolved.startswith(PATHS.assets + os.sep):
-                raise PanelError(400, "video_path must stay inside the assets directory")
+                raise PanelError(400, field + " must stay inside the assets directory")
             if not os.path.exists(resolved):
-                raise PanelError(404, "no such video: " + video)
-            payload["video_path"] = resolved.replace("\\", "/")
+                raise PanelError(404, "no such file: " + value)
+            payload[field] = resolved.replace("\\", "/")
 
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
