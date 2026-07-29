@@ -152,25 +152,9 @@
             <div class="row">
               <select id="ed-voice"></select>
               <button id="ed-play" type="button" class="ghost small"></button>
+              <button id="ed-manage-voices" type="button" class="ghost small"></button>
             </div>
             <p id="ed-voice-info" class="field-note"></p>
-          </div>
-
-          <div class="field upload-box">
-            <span id="lb-upload"></span>
-            <input id="ed-file" type="file" accept="audio/*,video/*" />
-            <div class="row">
-              <label class="mini"
-                ><span id="lb-start"></span
-                ><input id="ed-start" type="number" min="0" step="0.5" value="0"
-              /></label>
-              <label class="mini"
-                ><span id="lb-duration"></span
-                ><input id="ed-duration" type="number" min="1" max="15" step="0.5" value="10"
-              /></label>
-              <button id="ed-upload" type="button" class="ghost small"></button>
-            </div>
-            <p id="ed-upload-status" class="field-note"></p>
           </div>
 
           <div class="field">
@@ -231,13 +215,6 @@
             <p id="ed-mt-status" class="field-note"></p>
             <p id="lb-mt-note" class="field-note"></p>
           </div>
-
-          <label class="field">
-            <span id="lb-reftext"></span>
-            <textarea id="ed-reftext" rows="3"></textarea>
-          </label>
-          <button id="ed-transcribe" type="button" class="ghost small"></button>
-          <p id="ed-transcribe-status" class="field-note"></p>
 
           <p id="editor-error" class="error" hidden></p>
         </div>
@@ -303,6 +280,62 @@
           <div class="spacer"></div>
           <button id="llm-cancel" type="button" class="ghost"></button>
           <button id="llm-save" type="button" class="primary"></button>
+        </footer>
+      </div>
+    </div>
+
+    <div id="voices-backdrop" class="backdrop" hidden>
+      <div class="modal">
+        <header class="modal-head">
+          <h2 id="voices-title"></h2>
+        </header>
+
+        <div class="modal-body">
+          <div class="field">
+            <span id="lb-voice-list"></span>
+            <div id="voices-list"></div>
+          </div>
+
+          <div class="field">
+            <span id="lb-voice-new"></span>
+            <p id="lb-voice-new-note" class="field-note"></p>
+            <input id="vp-file" type="file" accept="audio/*,video/*" />
+            <div class="row">
+              <label class="mini"
+                ><span id="lb-vp-start"></span
+                ><input id="vp-start" type="number" min="0" step="0.5" value="0"
+              /></label>
+              <label class="mini"
+                ><span id="lb-vp-duration"></span
+                ><input id="vp-duration" type="number" min="1" max="15" step="0.5" value="10"
+              /></label>
+              <button id="vp-clip" type="button" class="ghost small"></button>
+            </div>
+            <p id="vp-clip-status" class="field-note"></p>
+          </div>
+
+          <label class="field">
+            <span id="lb-vp-text"></span>
+            <textarea id="vp-text" rows="3"></textarea>
+          </label>
+          <div class="row">
+            <button id="vp-transcribe" type="button" class="ghost small"></button>
+          </div>
+          <p id="vp-text-status" class="field-note"></p>
+
+          <label class="field">
+            <span id="lb-vp-name"></span>
+            <input id="vp-name" type="text" maxlength="32" />
+          </label>
+
+          <p id="voices-error" class="error" hidden></p>
+        </div>
+
+        <footer class="modal-foot">
+          <div class="spacer"></div>
+          <button id="voices-close" type="button" class="ghost" hidden></button>
+          <button id="voices-done" type="button" class="ghost"></button>
+          <button id="vp-save" type="button" class="primary"></button>
         </footer>
       </div>
     </div>

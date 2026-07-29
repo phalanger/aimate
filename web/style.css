@@ -923,6 +923,43 @@ button:active {
   outline: none;
 }
 
+.voice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+}
+
+.voice-row + .voice-row {
+  margin-top: 6px;
+}
+
+.voice-name {
+  flex: 1;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.voice-meta[data-warn="true"] {
+  color: var(--error);
+}
+
+.voice-actions {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
 .setting-text {
   width: 260px;
   padding: 7px 10px;

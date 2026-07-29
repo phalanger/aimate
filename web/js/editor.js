@@ -33,6 +33,9 @@ export class CharacterEditor {
   constructor(options) {
     this.t = options.translate;
     this.onSaved = options.onSaved;
+    this.onManageVoices = options.onManageVoices;
+    this.selectedVoiceId = "";
+    this.legacyVoicePath = "";
     this.config = null;
     this.editingId = null;
     this.voices = [];
@@ -86,8 +89,14 @@ export class CharacterEditor {
       el(id).addEventListener("change", () => this._showLipsyncWarning());
     }
     el("ed-play").addEventListener("click", () => this._play());
-    el("ed-upload").addEventListener("click", () => this._upload());
-    el("ed-transcribe").addEventListener("click", () => this._transcribe());
+    el("ed-manage-voices").addEventListener("click", async () => {
+      // Making a voice is a four step sequence of its own; it lives in the
+      // voice library, and this dialog only picks one that already exists.
+      if (this.onManageVoices) {
+        await this.onManageVoices();
+        await this._loadVoices(this.selectedVoiceId);
+      }
+    });
     el("ed-mt-prepare").addEventListener("click", () => this._prepareMuseTalk());
     el("ed-save").addEventListener("click", () => this._save());
     el("ed-delete").addEventListener("click", () => this._delete());
@@ -99,10 +108,6 @@ export class CharacterEditor {
     el("lb-subtitle").textContent = t("lb_subtitle");
     el("lb-prompt").textContent = t("lb_prompt");
     el("lb-voice").textContent = t("lb_voice");
-    el("lb-upload").textContent = t("lb_upload");
-    el("lb-start").textContent = t("lb_start");
-    el("lb-duration").textContent = t("lb_duration");
-    el("lb-reftext").textContent = t("lb_reftext");
     el("lb-avatar").textContent = t("lb_avatar");
     el("lb-vrm").textContent = t("lb_vrm");
     el("lb-motion").textContent = t("lb_motion");
@@ -118,8 +123,7 @@ export class CharacterEditor {
     el("ed-rescan").textContent = t("btn_rescan");
     el("ed-rules").textContent = t("btn_rules");
     el("ed-play").textContent = t("btn_play");
-    el("ed-upload").textContent = t("btn_upload");
-    el("ed-transcribe").textContent = t("btn_transcribe");
+    el("ed-manage-voices").textContent = t("btn_manage_voices");
     el("ed-save").textContent = t("btn_save");
     el("ed-cancel").textContent = t("btn_cancel");
     el("ed-delete").textContent = t("btn_delete");
@@ -138,10 +142,11 @@ export class CharacterEditor {
     el("ed-label").value = character.label || "";
     el("ed-subtitle").value = character.subtitle || "";
     el("ed-prompt").value = character.system_prompt || this.t("rules_template").trimStart();
-    el("ed-reftext").value = character.ref_text || "";
-    el("ed-start").value = "0";
-    el("ed-duration").value = "10";
-    el("ed-file").value = "";
+    // voice_id is the current form. A config written before the library
+    // existed only has the clip path, so fall back to matching on that - the
+    // migration keys voices by file, so the same clip is the same voice.
+    this.selectedVoiceId = character.voice_id || "";
+    this.legacyVoicePath = character.voice || "";
 
     const avatar = character.avatar || {};
     this.avatar = {
@@ -159,7 +164,7 @@ export class CharacterEditor {
     await this._loadAssets();
     this._renderAvatarTypes();
 
-    await this._loadVoices(character.voice);
+    await this._loadVoices(this.selectedVoiceId, this.legacyVoicePath);
 
     el("editor-backdrop").hidden = false;
     el("ed-label").focus();
@@ -300,10 +305,21 @@ export class CharacterEditor {
 
   // ---------- voices ----------
 
-  async _loadVoices(selectedPath) {
-    const response = await fetch("/api/voices", { cache: "no-store" });
-    const data = await response.json();
-    this.voices = data.voices || [];
+  // Voices are picked here, never built here. The clip and its transcript are
+  // one record in the library, so this only has to remember which one.
+  async _loadVoices(selectedId, legacyPath) {
+    try {
+      const response = await fetch("/api/voicepacks", { cache: "no-store" });
+      const data = await response.json();
+      this.voices = data.voices || [];
+    } catch (err) {
+      this.voices = [];
+    }
+    // Resolved after the list is in hand, not before: matching a legacy clip
+    // path needs the list to match against.
+    if (!selectedId) {
+      selectedId = this._idForPath(legacyPath);
+    }
 
     const select = el("ed-voice");
     select.innerHTML = "";
@@ -315,131 +331,62 @@ export class CharacterEditor {
 
     for (const voice of this.voices) {
       const option = document.createElement("option");
-      option.value = voice.path;
-      option.textContent = voice.name;
+      option.value = voice.id;
+      option.textContent = voice.label;
       select.appendChild(option);
     }
 
-    if (selectedPath) {
-      // Config may carry a path from another machine; match on the file name
-      // so an imported characters.json still resolves.
-      const wanted = String(selectedPath).replace(/\\/g, "/").split("/").pop();
-      const match = this.voices.find((v) => v.path.split("/").pop() === wanted);
-      select.value = match ? match.path : "";
-    }
-
+    select.value = this.voices.some((v) => v.id === selectedId) ? selectedId : "";
+    this.selectedVoiceId = select.value;
     this._showVoiceInfo();
   }
 
   _selectedVoice() {
-    const path = el("ed-voice").value;
-    return this.voices.find((v) => v.path === path) || null;
+    return this.voices.find((v) => v.id === el("ed-voice").value) || null;
+  }
+
+  _idForPath(path) {
+    if (!path) {
+      return "";
+    }
+    const wanted = String(path).replace(/\\/g, "/").split("/").pop();
+    const match = this.voices.find((v) => String(v.file).split("/").pop() === wanted);
+    return match ? match.id : "";
   }
 
   _showVoiceInfo() {
     const note = el("ed-voice-info");
     const voice = this._selectedVoice();
+    this.selectedVoiceId = voice ? voice.id : "";
     if (!voice) {
       note.textContent = "";
       note.dataset.warn = "false";
       return;
     }
-    if (voice.normalised) {
-      note.dataset.warn = "false";
-      note.textContent = format(this.t("voice_ok"), {
-        duration: voice.duration,
-        rate: voice.sample_rate,
-        channels: voice.channels,
-      });
-    } else {
+    if (voice.missing) {
       note.dataset.warn = "true";
-      note.textContent =
-        format(this.t("voice_ok"), {
-          duration: voice.duration,
-          rate: voice.sample_rate,
-          channels: voice.channels,
-        }) +
-        " - " +
-        this.t("voice_warn");
+      note.textContent = this.t("voice_missing");
+      return;
     }
+    // Flagged rather than blocked: it still speaks without a transcript, just
+    // less like the sample.
+    note.dataset.warn = String(!voice.ref_text);
+    note.textContent = voice.ref_text
+      ? format(this.t("voice_meta"), { duration: voice.duration })
+      : format(this.t("voice_meta_notext"), { duration: voice.duration });
   }
 
   _play() {
     const voice = this._selectedVoice();
-    if (!voice) {
+    if (!voice || voice.missing) {
       return;
     }
     // Served through the API: the voices folder lives outside the panel
     // directory, so it is not reachable as a static path.
+    const name = String(voice.file).split("/").pop().replace(/\.wav$/i, "");
     const audio = el("preview");
-    audio.src = "/api/voice-file?name=" + encodeURIComponent(voice.name) + "&ts=" + Date.now();
+    audio.src = "/api/voice-file?name=" + encodeURIComponent(name) + "&ts=" + Date.now();
     audio.play().catch(() => {});
-  }
-
-  async _upload() {
-    const file = el("ed-file").files[0];
-    if (!file) {
-      return;
-    }
-    const status = el("ed-upload-status");
-    status.dataset.warn = "false";
-    status.textContent = this.t("uploading");
-
-    // Name the clip after the character being edited so files stay traceable.
-    const base = (el("ed-label").value.trim() || "voice").replace(/[^A-Za-z0-9_-]/g, "");
-    const name = (base || "voice") + "-" + Date.now().toString(36);
-
-    const query = new URLSearchParams({
-      name: name,
-      start: el("ed-start").value || "0",
-      duration: el("ed-duration").value || "10",
-    });
-
-    try {
-      const response = await fetch("/api/voices?" + query.toString(), {
-        method: "POST",
-        body: file,
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || response.status);
-      }
-      await this._loadVoices(data.path);
-      status.textContent = format(this.t("upload_done"), {
-        name: data.name,
-        duration: data.duration,
-        rate: data.sample_rate,
-      });
-    } catch (err) {
-      status.dataset.warn = "true";
-      status.textContent = this.t("err_upload") + err.message;
-    }
-  }
-
-  async _transcribe() {
-    const voice = this._selectedVoice();
-    if (!voice) {
-      return;
-    }
-    const status = el("ed-transcribe-status");
-    status.dataset.warn = "false";
-    status.textContent = this.t("transcribing");
-
-    try {
-      const response = await fetch(
-        "/api/transcribe?file=" + encodeURIComponent(voice.name) + "&language=zh",
-        { method: "POST" }
-      );
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || response.status);
-      }
-      el("ed-reftext").value = data.text || "";
-      status.textContent = this.t("transcribe_done");
-    } catch (err) {
-      status.dataset.warn = "true";
-      status.textContent = this.t("err_transcribe") + err.message;
-    }
   }
 
   // Preparation walks every frame doing face detection and VAE encoding, so
@@ -502,8 +449,6 @@ export class CharacterEditor {
 
   _clearStatus() {
     el("editor-error").hidden = true;
-    el("ed-upload-status").textContent = "";
-    el("ed-transcribe-status").textContent = "";
     el("ed-voice-info").textContent = "";
   }
 
@@ -534,8 +479,13 @@ export class CharacterEditor {
     this.config.characters[id] = Object.assign({}, existing, {
       label: label,
       subtitle: el("ed-subtitle").value.trim(),
-      voice: voice ? voice.path : "",
-      ref_text: el("ed-reftext").value.trim(),
+      voice_id: voice ? voice.id : "",
+      // voice and ref_text are written from the chosen voice rather than
+      // edited here. They stay because the pipeline is handed a clip path at
+      // session.update time and reads it from this field; voice_id is what the
+      // UI works in, and this keeps the two from disagreeing.
+      voice: voice ? voice.file : "",
+      ref_text: voice ? voice.ref_text || "" : "",
       system_prompt: prompt,
       avatar: Object.assign({}, existing.avatar, this.avatar),
     });

@@ -2,6 +2,7 @@ import { Stage } from "./stage.js";
 import { AudioEngine } from "./audio.js";
 import { RealtimeClient } from "./realtime.js";
 import { CharacterEditor } from "./editor.js";
+import { VoiceLibrary } from "./voices.js";
 import { LlmSettings } from "./llm.js";
 import { SettingsDialog, loadSettings, setting } from "./settings.js";
 import { HeadInset } from "./inset.js";
@@ -991,9 +992,19 @@ async function main() {
   state.inset.attach(state.stage);
   state.inset.start();
 
+  state.voices = new VoiceLibrary({ translate: t });
+  state.voices.applyStaticText();
+
   state.editor = new CharacterEditor({
     translate: t,
     onSaved: (_config, activeId) => reloadCharacters(activeId),
+    // Resolves when the library is closed again, so the editor can refresh its
+    // list and keep whatever was just made selectable without a reopen.
+    onManageVoices: () =>
+      new Promise((resolve) => {
+        state.voices.onChanged = resolve;
+        state.voices.open();
+      }),
   });
   state.editor.applyStaticText();
 

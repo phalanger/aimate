@@ -121,6 +121,7 @@ class Paths:
         self.characters = os.path.join(self.config, "characters.json")
         self.providers = os.path.join(self.config, "providers.json")
         self.settings = os.path.join(self.config, "settings.json")
+        self.voicepacks = os.path.join(self.config, "voices.json")
         self.voices = os.path.join(self.assets, "voices")
         self.bin = os.path.join(self.root, "runtime", "bin")
         self.recordings = os.path.join(self.root, "var", "recordings")
@@ -238,6 +239,90 @@ def voice_path(name):
     if not SAFE_NAME.match(name):
         raise PanelError(400, "invalid voice name: letters, digits, _ and - only")
     return os.path.join(PATHS.voices, name + ".wav")
+
+
+def today():
+    import datetime
+
+    return datetime.date.today().isoformat()
+
+
+def read_characters():
+    try:
+        with open(PATHS.characters, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+
+
+def new_voicepack_id(existing):
+    base = "v-%s" % today().replace("-", "")
+    index = 1
+    while "%s-%d" % (base, index) in existing:
+        index += 1
+    return "%s-%d" % (base, index)
+
+
+def load_voicepacks():
+    """The voice registry, built from the old per-character fields on first run.
+
+    Before this file existed a voice was two fields on every character that
+    used it - the clip and its transcript - so the same voice was written out
+    once per character and the copies drifted. Migration folds them back
+    together by clip path: same file means same voice.
+
+    The old fields are left on the characters. Nothing reads them any more, but
+    leaving them means a downgrade still finds a working config.
+    """
+    try:
+        with open(PATHS.voicepacks, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data.get("voices"), dict):
+            return data["voices"]
+    except Exception:
+        pass
+
+    packs = {}
+    by_file = {}
+    characters = read_characters().get("characters", {})
+    for name, character in characters.items():
+        path = (character.get("voice") or "").strip()
+        if not path:
+            continue
+        key = os.path.normcase(os.path.normpath(path))
+        if key in by_file:
+            # A second character on the same clip: keep the transcript that is
+            # not empty, otherwise they are the same voice already.
+            existing = packs[by_file[key]]
+            if not existing.get("ref_text"):
+                existing["ref_text"] = (character.get("ref_text") or "").strip()
+            continue
+        pack_id = "v-%s" % re.sub(r"[^a-zA-Z0-9_-]+", "-", os.path.splitext(os.path.basename(path))[0])
+        packs[pack_id] = {
+            "label": character.get("label") or name,
+            "file": path.replace("\\", "/"),
+            "ref_text": (character.get("ref_text") or "").strip(),
+            "created": today(),
+        }
+        by_file[key] = pack_id
+
+    if packs:
+        save_voicepacks(packs)
+    return packs
+
+
+def save_voicepacks(packs):
+    payload = {
+        "_comment": "Voice library. Each entry is a reference clip and the exact transcript of it - cloning needs both, and needs them to match. Characters point at one of these by voice_id.",
+        "voices": packs,
+    }
+    os.makedirs(os.path.dirname(PATHS.voicepacks), exist_ok=True)
+    if os.path.exists(PATHS.voicepacks):
+        shutil.copyfile(PATHS.voicepacks, PATHS.voicepacks + ".bak")
+    temp = PATHS.voicepacks + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    os.replace(temp, PATHS.voicepacks)
 
 
 def audio_info(path):
@@ -458,11 +543,25 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as exc:
             self._send_error_json(500, str(exc))
 
+    def do_DELETE(self):
+        try:
+            route = urllib.parse.urlparse(self.path).path
+            if route == "/api/voicepacks":
+                self._delete_voicepack()
+            else:
+                raise PanelError(404, "unknown endpoint")
+        except PanelError as exc:
+            self._send_error_json(exc.status, exc.message)
+        except Exception as exc:
+            self._send_error_json(500, str(exc))
+
     def do_POST(self):
         try:
             route = urllib.parse.urlparse(self.path).path
             if route == "/api/voices":
                 self._post_voice()
+            elif route == "/api/voicepacks":
+                self._post_voicepack()
             elif route == "/api/transcribe":
                 self._post_transcribe()
             elif route == "/v1/chat/completions":
@@ -511,6 +610,8 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(json.load(handle))
         elif route == "/api/voices":
             self._send_json({"voices": self._list_voices()})
+        elif route == "/api/voicepacks":
+            self._send_json({"voices": self._list_voicepacks()})
         elif route == "/api/voice-file":
             self._send_voice_file()
         elif route == "/api/llm":
@@ -655,6 +756,93 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
         return entries
+
+    def _list_voicepacks(self):
+        """The saved voices, each one a clip and the transcript that goes with it.
+
+        Both halves are needed together: cloning conditions on the reference
+        speech *and* on what was said in it, so a transcript that belongs to a
+        different clip is worse than none. Keeping them as one record is the
+        point of this file - stored per character, they drifted apart.
+        """
+        packs = load_voicepacks()
+        out = []
+        for pack_id, pack in sorted(packs.items(), key=lambda kv: kv[1].get("label", "")):
+            entry = dict(pack)
+            entry["id"] = pack_id
+            path = pack.get("file", "")
+            if path and os.path.exists(path):
+                duration, rate, channels, subtype = audio_info(path)
+                entry["duration"] = duration
+                entry["normalised"] = clip_is_normalised(rate, channels, subtype, duration)
+                entry["missing"] = False
+            else:
+                entry["duration"] = 0
+                entry["missing"] = True
+            out.append(entry)
+        return out
+
+    def _post_voicepack(self):
+        try:
+            payload = json.loads(self._read_body().decode("utf-8"))
+        except ValueError as exc:
+            raise PanelError(400, "invalid JSON: %s" % exc)
+
+        label = (payload.get("label") or "").strip()
+        path = (payload.get("file") or "").strip()
+        if not label:
+            raise PanelError(400, "a name is required")
+        if not path:
+            raise PanelError(400, "a reference clip is required")
+        path = os.path.abspath(path)
+        if not path.startswith(PATHS.voices + os.sep):
+            raise PanelError(400, "the clip must live in assets/voices")
+        if not os.path.exists(path):
+            raise PanelError(404, "no such clip: " + path)
+
+        packs = load_voicepacks()
+        pack_id = (payload.get("id") or "").strip() or new_voicepack_id(packs)
+        packs[pack_id] = {
+            "label": label,
+            "file": path.replace("\\", "/"),
+            "ref_text": (payload.get("ref_text") or "").strip(),
+            "created": packs.get(pack_id, {}).get("created") or today(),
+        }
+        save_voicepacks(packs)
+        self._send_json({"ok": True, "id": pack_id, "voices": self._list_voicepacks()})
+
+    def _delete_voicepack(self):
+        pack_id = self._param("id")
+        packs = load_voicepacks()
+        if pack_id not in packs:
+            raise PanelError(404, "no such voice: %s" % pack_id)
+
+        # Refuse rather than leave a character pointing at nothing - the only
+        # symptom of that would be the pipeline falling back to some other
+        # voice mid-conversation.
+        #
+        # Matched on the clip path as well as on voice_id: a character saved
+        # before the library existed only has the path, and checking just the
+        # id let the voice two characters were using be deleted with no warning
+        # at all.
+        def same_file(a, b):
+            return bool(a) and bool(b) and os.path.normcase(os.path.normpath(a)) == os.path.normcase(
+                os.path.normpath(b)
+            )
+
+        pack_file = packs[pack_id].get("file", "")
+        users = [
+            character.get("label") or name
+            for name, character in read_characters().get("characters", {}).items()
+            if character.get("voice_id") == pack_id
+            or (not character.get("voice_id") and same_file(character.get("voice"), pack_file))
+        ]
+        if users:
+            raise PanelError(409, "still used by: " + ", ".join(users))
+
+        del packs[pack_id]
+        save_voicepacks(packs)
+        self._send_json({"ok": True, "voices": self._list_voicepacks()})
 
     def _put_characters(self):
         try:
