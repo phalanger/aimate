@@ -28,6 +28,15 @@
         "{panel_port}"
       ],
       "cwd": "{root}",
+      "_env_proxy": "只有面板会访问公网（调用云端大模型）。代理地址来自设置里的「云端模型的代理」；留空时这几个变量不会被设置，沿用启动环境里已有的。NO_PROXY 保证本机之间的调用（口型服务、Ollama、面板自己）不绕代理。",
+      "env": {
+        "HTTP_PROXY": "{proxy}",
+        "HTTPS_PROXY": "{proxy}",
+        "http_proxy": "{proxy}",
+        "https_proxy": "{proxy}",
+        "NO_PROXY": "{no_proxy}",
+        "no_proxy": "{no_proxy}"
+      },
       "ready": {
         "type": "tcp",
         "port": "{panel_port}"

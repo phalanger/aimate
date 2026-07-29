@@ -198,6 +198,21 @@ def parent_alive(pid):
         kernel32.CloseHandle(handle)
 
 
+def read_setting(key, default=None):
+    """One value out of the settings file, before anything is running."""
+    path = os.path.join(ROOT, "config", "settings.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        for group in data.get("groups", []):
+            for item in group.get("items", []):
+                if item.get("key") == key:
+                    return item.get("value", default)
+    except Exception:
+        pass
+    return default
+
+
 def read_lan_setting():
     """Whether the user opted into serving the whole network.
 
@@ -225,6 +240,12 @@ def load_services():
     variables = dict(config.get("vars", {}))
     variables["root"] = ROOT
     variables["bind"] = "0.0.0.0" if read_lan_setting() else "127.0.0.1"
+    # Only the panel reaches the public internet, and only to call whichever
+    # cloud model is selected. Proxy variables are usually set per shell
+    # session, so a process launched from Explorer has none and those calls
+    # time out - which shows up as the voice pipeline never finishing its
+    # warm-up. Empty means "use whatever the environment already had".
+    variables["proxy"] = str(read_setting("llm_proxy", "") or "")
 
     services = []
     for index, spec in enumerate(config.get("services", [])):
@@ -335,7 +356,10 @@ class Supervisor:
         service.log.write("\n=== started %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
 
         environment = dict(os.environ)
-        environment.update(service.env)
+        # An entry that expands to nothing is left alone rather than set empty:
+        # an empty HTTP_PROXY means "no proxy" and would override one the
+        # launching shell had already provided.
+        environment.update({k: v for k, v in service.env.items() if v})
         # Unbuffered, so a crashing child's last words are not lost in a pipe
         # buffer - which is exactly when they matter most.
         environment["PYTHONUNBUFFERED"] = "1"
