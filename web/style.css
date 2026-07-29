@@ -17,6 +17,21 @@
   box-sizing: border-box;
 }
 
+/* The browser hides [hidden] with `display: none`, but that rule carries no
+   more weight than a class here and loses to whichever comes later - so
+   `.field { display: flex }` kept every field visible no matter what the code
+   set .hidden to, which is why picking one avatar type still showed all of
+   them.
+
+   Eight selectors had already run into this and each answered it the same way,
+   with a local `.thing[hidden] { display: none }`. Any control whose author
+   did not know to write that ninth copy is simply never hidden. Said once
+   here instead, with enough force to survive a later `display`; the eight
+   copies are gone. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -107,10 +122,6 @@ body {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   cursor: grab;
   touch-action: none;
-}
-
-.inset-frame[hidden] {
-  display: none;
 }
 
 .inset-frame[data-dragging="true"] {
@@ -338,10 +349,6 @@ body {
   paint-order: stroke fill;
   -webkit-text-stroke: var(--sub-stroke, 0) rgba(0, 0, 0, 0.85);
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
-}
-
-.subtitle[hidden] {
-  display: none;
 }
 
 .subtitle em {
@@ -572,10 +579,6 @@ button:active {
   transform: rotate(-45deg);
 }
 
-.panel-body[hidden] {
-  display: none;
-}
-
 .icon-btn:disabled {
   color: rgba(255, 255, 255, 0.18);
   border-color: rgba(255, 255, 255, 0.05);
@@ -670,10 +673,6 @@ button:active {
   padding: 24px;
   background: rgba(6, 7, 10, 0.72);
   backdrop-filter: blur(4px);
-}
-
-.backdrop[hidden] {
-  display: none;
 }
 
 .modal {
@@ -832,10 +831,6 @@ button:active {
   background: rgba(232, 139, 139, 0.1);
 }
 
-.danger[hidden] {
-  display: none;
-}
-
 /* ---------- settings dialog ---------- */
 
 .modal-wide {
@@ -883,20 +878,12 @@ button:active {
   gap: 14px;
 }
 
-.settings-section[hidden] {
-  display: none;
-}
-
 .setting {
   display: flex;
   flex-direction: column;
   gap: 5px;
   padding-bottom: 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.setting[hidden] {
-  display: none;
 }
 
 .setting:last-child {
@@ -1111,10 +1098,6 @@ button:active {
 
 #llm-model-manual {
   margin-top: 6px;
-}
-
-#llm-key-field[hidden] {
-  display: none;
 }
 
 .character-name {
