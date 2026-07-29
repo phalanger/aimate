@@ -182,6 +182,49 @@ impl Text {
     }
 }
 
+/// Where the window was last left.
+///
+/// Kept in var/ with the rest of the regenerable state rather than in the
+/// WebView2 profile, which belongs to the page.
+fn geometry_path(root: &Path) -> PathBuf {
+    root.join("var").join("run").join("window.json")
+}
+
+fn load_geometry(root: &Path) -> Option<(f64, f64, Option<(f64, f64)>)> {
+    let text = std::fs::read_to_string(geometry_path(root)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let width = value.get("width")?.as_f64()?;
+    let height = value.get("height")?.as_f64()?;
+    // Refuse something unusable: a window restored at 20x20, or one saved on a
+    // monitor that is no longer attached, cannot be recovered by dragging.
+    if !(width >= 640.0 && height >= 480.0 && width < 20000.0 && height < 20000.0) {
+        return None;
+    }
+    let position = match (value.get("x").and_then(|v| v.as_f64()), value.get("y").and_then(|v| v.as_f64())) {
+        (Some(x), Some(y)) if x > -20000.0 && y > -20000.0 => Some((x, y)),
+        _ => None,
+    };
+    Some((width, height, position))
+}
+
+fn save_geometry(root: &Path, window: &tao::window::Window) {
+    // Logical units, so moving the window to a display with a different
+    // scaling factor does not resize it on the next launch.
+    let scale = window.scale_factor();
+    let size = window.inner_size().to_logical::<f64>(scale);
+    let mut payload = serde_json::json!({ "width": size.width, "height": size.height });
+    if let Ok(position) = window.outer_position() {
+        let position = position.to_logical::<f64>(scale);
+        payload["x"] = serde_json::json!(position.x);
+        payload["y"] = serde_json::json!(position.y);
+    }
+    let path = geometry_path(root);
+    if let Some(folder) = path.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    let _ = std::fs::write(path, payload.to_string());
+}
+
 fn port_open(port: u16) -> bool {
     TcpStream::connect_timeout(
         &([127, 0, 0, 1], port).into(),
@@ -263,11 +306,15 @@ fn main() -> wry::Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let window = WindowBuilder::new()
+    let saved = load_geometry(&root);
+    let (width, height) = saved.map(|(w, h, _)| (w, h)).unwrap_or((1280.0, 800.0));
+    let mut builder = WindowBuilder::new()
         .with_title("AI")
-        .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 800.0))
-        .build(&event_loop)
-        .expect("failed to create window");
+        .with_inner_size(tao::dpi::LogicalSize::new(width, height));
+    if let Some((_, _, Some((x, y)))) = saved {
+        builder = builder.with_position(tao::dpi::LogicalPosition::new(x, y));
+    }
+    let window = builder.build(&event_loop).expect("failed to create window");
 
     // WebView2 keeps a Chromium profile - cache, cookies, localStorage - and
     // by default drops it next to the executable as "mate.exe.WebView2". That
@@ -306,6 +353,9 @@ fn main() -> wry::Result<()> {
     // supervisor publishes what it is doing; waiting on that rather than on
     // the panel's port alone is what lets the loading screen name the service
     // still being waited for, and know which ones were skipped.
+    // The event loop takes ownership of everything it touches, so the paths it
+    // still needs are cloned out before the closure captures them.
+    let geometry_root = root.clone();
     let status_file = root.join("var").join("run").join("status.json");
     // Nothing was spawned, so nothing is going to publish progress: the
     // services were already running and were adopted.
@@ -368,6 +418,9 @@ fn main() -> wry::Result<()> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
+                // Read before anything is torn down, while the window still
+                // has a size to report.
+                save_geometry(&geometry_root, &window);
                 if let Some(child) = child.as_mut() {
                     stop_supervisor(child);
                 }

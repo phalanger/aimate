@@ -47,6 +47,13 @@ class AudioPlaybackProcessor extends AudioWorkletProcessor {
         this._writeIndex = 0;
         this._available = 0;
         this._played = 0;
+        // A clear is a deliberate flush, not audio running out, so it must not
+        // look like the end of a turn. It did: emptying the buffer made the
+        // next block report the drained edge, and replay clears the speaker
+        // before queueing the cached reply - so the turn was declared over
+        // immediately after starting, which wiped the subtitles that had just
+        // been scheduled for it.
+        this._wasActive = false;
       }
     };
   }
