@@ -27,6 +27,7 @@ I:\ai\code\mate\scripts\start-all.ps1
 
 | 路径 | 内容 | 更新时 |
 | --- | --- | --- |
+| `app/` | 桌面外壳（Rust + wry），构建出 `mate.exe` | 整个替换 |
 | `web/` | 浏览器前端（渲染、音频、字幕、录制） | 整个替换 |
 | `server/` | 面板服务端：静态服务、配置 API、LLM 代理 | 整个替换 |
 | `services/lipsync/` | MuseTalk 口型服务（独立 conda 环境） | 整个替换 |

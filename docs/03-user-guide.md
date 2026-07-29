@@ -5,7 +5,21 @@ API Key，对话内容不出本机。
 
 ## 一、快速启动
 
-打开 PowerShell，执行：
+**双击 `mate.exe`**（在项目根目录）。它会启动全部服务、等面板就绪、然后显示界面；
+**关掉窗口就停掉一切**。窗口里 **F5 刷新**、**F12 开检查器**。
+
+第一次要先编译一下外壳（需要 Rust）：
+
+```powershell
+I:\ai\code\mate\scripts\build-shell.ps1
+```
+
+给 `mate.exe` 的参数会原样转给 supervisor，例如 `.\mate.exe --skip lipsync,voice`
+只起面板、完全不碰显卡。
+
+### 或者用命令行启动
+
+想看实时日志、或者不想编译外壳，就直接跑：
 
 ```powershell
 I:\ai\code\mate\scripts\start-all.ps1

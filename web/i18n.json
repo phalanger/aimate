@@ -1,6 +1,11 @@
 {
   "_comment": "界面文案。单独放在数据文件里，是为了让 js 源码保持纯 ASCII（见 CLAUDE.md 第 3 条）。改这里就能改界面用词。",
   "app_title": "AI 伴侣",
+  "_shell": "下面四条是桌面外壳（mate.exe）启动画面上的文字。放在这里是因为 Rust 源码同样要保持纯 ASCII（见 CLAUDE.md 第 3 条）。",
+  "shell_starting": "正在启动",
+  "shell_starting_detail": "第一次启动要把 Whisper 和语音合成模型加载到显卡，大约一分钟。",
+  "shell_failed": "启动失败",
+  "shell_failed_detail": "面板没有在预期时间内启动。\n看 var\\logs\\shell.log 和 var\\logs\\panel.log。",
   "connect": "开始对话",
   "disconnect": "结束对话",
   "connecting": "连接中",

@@ -140,6 +140,41 @@ def expand(text, variables, extra=None):
     return out
 
 
+def parent_alive(pid):
+    """Whether the process that launched us is still running.
+
+    The desktop shell passes its own pid so that closing the window can never
+    leave a voice pipeline holding the GPU. The shell kills the tree itself on
+    a normal exit; this covers the cases where it does not get the chance -
+    killed from Task Manager, or crashed.
+
+    os.kill(pid, 0) is not usable here: on Windows os.kill terminates rather
+    than probes. Opening the process with SYNCHRONIZE and doing a zero-length
+    wait asks the same question without touching it.
+    """
+    if pid <= 0:
+        return True
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    import ctypes
+
+    SYNCHRONIZE = 0x00100000
+    WAIT_TIMEOUT = 0x00000102
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def read_lan_setting():
     """Whether the user opted into serving the whole network.
 
@@ -348,10 +383,15 @@ class Supervisor:
                     return False
         return True
 
-    def watch(self, restart=True):
+    def watch(self, restart=True, parent_pid=0):
         """Keep an eye on the children until Ctrl+C or nothing is left alive."""
         while self.running:
             time.sleep(1.0)
+
+            if parent_pid and not parent_alive(parent_pid):
+                self.say(None, "launcher exited; shutting down.", "33")
+                return
+
             alive = 0
             for service in self.services:
                 if not service.managed or not service.process or service.stopping:
@@ -430,6 +470,12 @@ def main():
     parser.add_argument("--skip", default="", help="comma-separated ids to leave out")
     parser.add_argument("--no-restart", action="store_true", help="do not restart a crashed service")
     parser.add_argument("--list", action="store_true", help="print the process table and exit")
+    parser.add_argument(
+        "--parent-pid",
+        type=int,
+        default=0,
+        help="shut down if this process exits; the desktop shell passes its own pid",
+    )
     args = parser.parse_args()
 
     services, variables = load_services()
@@ -481,7 +527,7 @@ def main():
                 )
             supervisor.say(None, "  Ctrl+C stops everything.", "90")
             supervisor.say(None, "", None)
-            supervisor.watch(restart=not args.no_restart)
+            supervisor.watch(restart=not args.no_restart, parent_pid=args.parent_pid)
         else:
             supervisor.say(None, "startup failed; see the messages above.", "91")
     except KeyboardInterrupt:

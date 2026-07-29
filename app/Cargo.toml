@@ -1,0 +1,27 @@
+[package]
+name = "mate"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop shell for the local companion"
+
+# wry is the webview crate Tauri is built on, and it is what creates the
+# WebView2 instance. Tauri's own layer on top adds an IPC bridge, a plugin
+# system and a bundler; none of that is used here, because the page already
+# talks to a local HTTP server for everything it needs and gets a secure
+# context out of it. See docs/04-packaging.md.
+[dependencies]
+wry = "0.55"
+tao = "0.35"
+serde_json = "1"
+
+[[bin]]
+name = "mate"
+path = "src/main.rs"
+
+[profile.release]
+# The shell is a launcher, not a hot path. Optimise for a small binary.
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

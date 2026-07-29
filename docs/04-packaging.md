@@ -78,6 +78,61 @@ asset 协议。**
   `https://tauri.localhost`，这个 ws 连接会被当成混合内容**直接阻断**，语音链路
   当场就断了
 
+## 一点五、桌面外壳（已完成）
+
+`app\` 是一个 Rust 程序，`mate.exe`。双击启动服务、等面板起来、显示界面；关窗口
+停掉一切。
+
+```powershell
+scripts\build-shell.ps1     # 编译并把 mate.exe 放到项目根目录
+```
+
+约 550 KB。需要 Rust（<https://rustup.rs/>）。
+
+### 为什么是 wry 而不是完整的 Tauri
+
+用的是 **wry**——Tauri 用来创建 WebView2 的那个 crate，所以窗口里跑的是同一个
+WebView2，行为完全一致（spike 验证过）。
+
+Tauri 在它上面加的是 IPC 桥、插件系统和打包器。**这里一样都用不上**：页面要的
+一切都通过本地 HTTP 服务拿，不需要 JS 调 Rust。真到要做安装包那一步再上 Tauri 的
+bundler 也不用重写外壳——外壳一共两百行。
+
+### 三件必须做对的事
+
+**一、webview 指向 `http://127.0.0.1:8900`，不打包前端。**页面本来就要访问
+`/api/*`；127.0.0.1 是安全上下文，麦克风和 AudioWorklet 都满足；而且
+`ws://127.0.0.1:8765` 和页面同为 http 方案。走 Tauri 默认的 `https://tauri.localhost`
+的话，这个 ws 会被当混合内容**直接阻断**。
+
+**二、F5 刷新在页面里处理，不在窗口层。**webview 拿到焦点时宿主窗口根本收不到
+按键。所以注入一段脚本监听 F5 / Ctrl+R 调 `location.reload()`。F12 开检查器由
+`with_devtools(true)` 提供。
+
+**三、关掉窗口必须收干净，包括外壳自己被杀的情况。**两条路径：
+
+- 正常关窗 → 外壳对 supervisor 执行 `taskkill /T`（只杀 supervisor 会留下三个
+  孤儿服务，而占着 8900 的孤儿会让下次启动失败）
+- 外壳被任务管理器杀掉或崩溃 → supervisor 自己发现父进程没了并优雅退出。外壳启动
+  时传了 `--parent-pid`，supervisor 每秒探一次
+
+第二条不是多余的：少了它，一个还占着显存的语音流水线会留在后台，而已经没有窗口
+可以关了。
+
+Windows 上探父进程用 `OpenProcess(SYNCHRONIZE)` 加零超时的 `WaitForSingleObject`，
+**不能用 `os.kill(pid, 0)`**——Windows 上 `os.kill` 是终止进程，不是探测。
+
+### 参数透传
+
+给 `mate.exe` 的参数原样转给 supervisor：
+
+```powershell
+.\mate.exe --skip lipsync         不要口型服务
+.\mate.exe --skip lipsync,voice   只起面板，完全不碰显卡
+```
+
+面板已经在跑时外壳会接管而不是重复启动，和 supervisor 的行为一致。
+
 ## 二、体积
 
 完全自包含要多大，实测：
