@@ -7,7 +7,7 @@ lip-versus-skin colour gap looked as bad as a known failure came out fine, and
 the only thing that separated them was generating and looking. So this pays the
 GPU time instead of guessing.
 
-Three things are measured, and each is something that was actually seen going
+Four things are measured, and each is something that was actually seen going
 wrong:
 
     colour   whether the lips keep their colour. The mouth is repainted from
@@ -17,6 +17,12 @@ wrong:
     fit      how the detected face compares with the model's 256 px working
              size. Much smaller wastes it; much larger means its output is
              upscaled back.
+    detail   how much of the mouth's fine texture survives - lip lines,
+             highlights, the edge of the lip. The model paints a smooth
+             plausible mouth, so this is always a loss; what the number says is
+             how much there was to lose. Rendering the source larger does not
+             help: the model works at 256 px however big the input was, and the
+             same texture disappears at every source size tried.
     motion   how much the mouth actually moves across the generated frames. A
              face that will not animate scores well on the other two and is
              still useless. Note this is not comparable between a still and a
@@ -24,12 +30,10 @@ wrong:
              number comes out higher for reasons that have nothing to do with
              lip sync.
 
-The ranking is a shortlist, not a verdict. Colour differences that are obvious
-side by side can still come out small in the number, which is why the sheet is
-written and why the closing line says to look at it.
-
-The contact sheet matters as much as the numbers. Both times a metric was
-misleading, the side-by-side settled it in a second.
+The ranking is a shortlist, not a verdict. Differences that are obvious side by
+side can still come out small in the number - that happened twice, and the
+side-by-side settled it in a second each time. Hence the contact sheet, and
+hence the closing line telling you to look at it.
 
     python scripts\\score-avatars.py <file-or-directory> [...]
 
@@ -146,6 +150,24 @@ def score_fit(face_px):
     return max(0.0, 100.0 * np.exp(-octaves))
 
 
+def score_detail(src_mouth, gen_mouth):
+    """Fraction of the mouth's local contrast that survives generation.
+
+    Compared at the same pixel size, or the larger image would win on having
+    more pixels rather than more detail.
+    """
+    target = (gen_mouth.shape[1], gen_mouth.shape[0])
+    reference = cv2.resize(src_mouth, target, interpolation=cv2.INTER_AREA)
+
+    def variance(img):
+        return cv2.Laplacian(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
+
+    before = variance(reference)
+    if before <= 1e-6:
+        return 0.0
+    return max(0.0, min(100.0, 100.0 * variance(gen_mouth) / before))
+
+
 def score_motion(frames):
     """Mean absolute change between consecutive mouth crops, as a percentage."""
     if len(frames) < 2:
@@ -199,6 +221,7 @@ def evaluate(state, Avatar, path, pcm, workdir):
     face_px = y2 - y1
 
     mouths = []
+    native = []
     for jpeg in jpegs:
         image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         # The stream is downscaled, so the box from the full frame has to be
@@ -208,6 +231,10 @@ def evaluate(state, Avatar, path, pcm, workdir):
         face = image[gy1:gy2, gx1:gx2]
         if face.size == 0:
             continue
+        # Kept at the size it is actually streamed at, for measuring detail.
+        native.append(mouth_region(face))
+        # And scaled to the source for everything that compares frames against
+        # each other or against the source.
         face = cv2.resize(face, (src_face.shape[1], src_face.shape[0]), interpolation=cv2.INTER_LANCZOS4)
         mouths.append(mouth_region(face))
 
@@ -224,10 +251,18 @@ def evaluate(state, Avatar, path, pcm, workdir):
 
     colour = score_colour(distance)
     fit = score_fit(face_px)
+    # Measured at the streamed size, not the source's. Blowing the generated
+    # mouth back up to a 400px source and comparing there marks a candidate
+    # down for detail at a resolution that never reaches the screen - which is
+    # what this did at first, and it made large faces look far worse than they
+    # are.
+    detail = score_detail(src_mouth, native[len(native) // 2])
     motion = score_motion(mouths)
     # Colour is weighted hardest because it is the failure that prompted this,
-    # and the one that cannot be fixed after the fact.
-    overall = 0.5 * colour + 0.25 * fit + 0.25 * motion
+    # and the one that cannot be fixed after the fact. Detail counts for less
+    # because every candidate loses some and no setting brings it back - it is
+    # here to say how much, not to separate good from bad.
+    overall = 0.45 * colour + 0.2 * fit + 0.2 * detail + 0.15 * motion
 
     return {
         "frame": frame.shape[1::-1],
@@ -236,6 +271,7 @@ def evaluate(state, Avatar, path, pcm, workdir):
         "lip_shift": distance,
         "colour": colour,
         "fit": fit,
+        "detail": detail,
         "motion": motion,
         "overall": overall,
         "src_mouth": src_mouth,
@@ -300,13 +336,13 @@ def main():
     good = [r for r in results if "error" not in r]
     good.sort(key=lambda r: r["overall"], reverse=True)
 
-    print("\n%-34s %7s %7s %7s %7s %9s %8s"
-          % ("candidate", "score", "colour", "fit", "motion", "lip shift", "face px"))
-    print("-" * 92)
-    for r in good:
-        print("%-34s %7.0f %7.0f %7.0f %7.0f %9.1f %8d"
-              % (r["name"][:34], r["overall"], r["colour"], r["fit"], r["motion"],
-                 r["lip_shift"], r["face_px"]))
+    print("\n%-30s %6s %7s %5s %7s %7s %9s %8s"
+          % ("candidate", "score", "colour", "fit", "detail", "motion", "lip shift", "face px"))
+    print("-" * 100)
+    for rank, r in enumerate(good, 1):
+        print("%2d. %-26s %6.0f %7.0f %5.0f %7.0f %7.0f %9.1f %8d"
+              % (rank, r["name"][:26], r["overall"], r["colour"], r["fit"],
+                 r["detail"], r["motion"], r["lip_shift"], r["face_px"]))
     for r in results:
         if "error" in r:
             print("%-34s   %s" % (r["name"][:34], r["error"]))
