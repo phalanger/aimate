@@ -936,6 +936,18 @@ button:active {
   outline: none;
 }
 
+.setting-text {
+  width: 260px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+}
+
 .setting-select {
   min-width: 210px;
   padding: 7px 10px;

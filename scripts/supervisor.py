@@ -545,6 +545,24 @@ class Supervisor:
         ]
         for thread in threads:
             thread.start()
+
+        # Let the shell in as soon as the services it cannot open without are
+        # up, and leave the optional ones loading behind the main window.
+        #
+        # Waiting for everything meant the splash sat there for the slowest
+        # service on the list, which is the lip-sync one: six and a half
+        # minutes measured here, of which four and a half were it reading a
+        # 6 GB checkpoint that nothing needs until the user actually speaks.
+        # The panel already copes with it being absent - it polls for the
+        # service and mounts the renderer when it appears - so that wait
+        # bought nothing.
+        required = [service for service in self.services if not service.optional]
+        for service in required:
+            done[service.id].wait()
+        if all(ok.get(service.id) for service in required):
+            self.done = True
+            self._write_status()
+
         for thread in threads:
             thread.join()
 

@@ -254,7 +254,9 @@ export class SettingsDialog {
     } else {
       input = document.createElement("input");
       input.type = "text";
-      input.className = "setting-number";
+      // Not setting-number: that is 84px wide and right aligned, which suits a
+      // frame count and hides most of a proxy URL.
+      input.className = "setting-text";
       input.value = STORE.values[item.key];
       input.addEventListener("change", () => this._save(item.key, input.value));
     }
