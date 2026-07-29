@@ -71,6 +71,8 @@ const state = {
   autoRetries: 0,
   retryTimer: null,
   retryAction: null,
+  services: { voice: false, lipsync: false },
+  polling: false,
 };
 
 function el(id) {
@@ -114,6 +116,11 @@ const AUTO_RETRIES = 4;
 const AUTO_RETRY_MS = 4000;
 
 function scheduleRendererRetry() {
+  // While a needed service is still starting, watchServices is already on
+  // it. Retrying here as well is what made the message flicker.
+  if (neededServices().lipsync && !state.services.lipsync) {
+    return;
+  }
   if (state.autoRetries >= AUTO_RETRIES) {
     return;
   }
@@ -181,37 +188,86 @@ function showNotice(key) {
   node.hidden = false;
 }
 
-// The panel is serving within seconds of launch; the voice pipeline needs a
-// minute or two to put Whisper and the TTS on the GPU. The window appears in
-// between, so without this the Connect button is a trap - pressing it during
-// that gap fails in a way that reads as a broken install.
+// Which back ends the character on screen actually needs. Only the lip-sync
+// display mode uses that service, so a 3D or 2D character should never be told
+// anything about it.
+function neededServices() {
+  const character = currentCharacter();
+  const avatar = (character && character.avatar) || {};
+  return { voice: true, lipsync: avatar.type === "musetalk" };
+}
+
+// Tracks which back ends are up, and treats "not up yet" as a state of its own
+// rather than as a failure.
 //
-// Polled rather than pushed: the pipeline is a separate process that knows
-// nothing about this page, and a port either accepts a connection or it does
-// not.
+// The panel is serving within seconds of launch; the voice pipeline needs a
+// minute or two to put Whisper and the TTS on the GPU, and the lip-sync
+// service about forty. Reporting either as an error during that window is both
+// wrong and useless - there is nothing to fix and nothing to retry, only
+// something to wait for. Worse, retrying on a timer made the message appear
+// and vanish every few seconds.
+//
+// So while a needed service is still coming up, the page says so plainly, the
+// buttons that depend on it are disabled, and the renderer's own complaints
+// are swallowed. The moment it appears, the renderer is mounted - no click.
+function ensurePolling() {
+  if (!state.polling) {
+    watchServices();
+  }
+}
+
 function watchServices() {
-  const button = el("connect");
-
-  const apply = (up) => {
-    if (state.connected) {
-      return;
-    }
-    button.disabled = !up;
-    button.textContent = up ? t("connect") : t("voice_starting");
-  };
-
+  if (state.polling) {
+    return;
+  }
+  state.polling = true;
   const poll = async () => {
-    let up = false;
+    let services = { voice: false, lipsync: false };
     try {
       const response = await fetch("/api/services", { cache: "no-store" });
-      up = !!(await response.json()).voice;
+      services = await response.json();
     } catch (err) {
-      // The panel itself is unreachable; nothing useful to report from here.
+      // The panel itself is unreachable; leave everything marked down.
     }
-    apply(up);
-    // Stop once it is up. It going away later surfaces as a connection error,
-    // which is the right place for it.
-    if (!up) {
+
+    const wasLipsyncUp = state.services.lipsync;
+    state.services = services;
+    const needed = neededServices();
+
+    const button = el("connect");
+    if (!state.connected) {
+      button.disabled = !services.voice;
+      button.textContent = services.voice ? t("connect") : t("voice_starting");
+    }
+
+    // Name the ones actually being waited on, so two services starting at
+    // different speeds do not look like one vague delay.
+    const waiting = [];
+    if (needed.voice && !services.voice) {
+      waiting.push(t("svc_voice"));
+    }
+    if (needed.lipsync && !services.lipsync) {
+      waiting.push(t("svc_lipsync"));
+    }
+
+    const startup = el("startup");
+    startup.hidden = waiting.length === 0;
+    if (waiting.length) {
+      startup.textContent = t("startup_waiting") + waiting.join(t("list_join"));
+      // Nothing has failed, so nothing should be showing as failed.
+      clearError();
+    }
+
+    // It just arrived: mount against it rather than waiting to be asked.
+    if (needed.lipsync && services.lipsync && !wasLipsyncUp) {
+      state.autoRetries = 0;
+      retryRenderer();
+    }
+
+    const settled = (!needed.voice || services.voice) && (!needed.lipsync || services.lipsync);
+    if (settled) {
+      state.polling = false;
+    } else {
       setTimeout(poll, 2000);
     }
   };
@@ -557,6 +613,8 @@ function selectCharacter(id) {
   // Fresh budget: this is a new attempt at a different thing.
   state.autoRetries = 0;
   clearTimeout(state.retryTimer);
+  // A different character may need a different service.
+  ensurePolling();
   rememberCharacter(id);
   renderCharacterList();
   el("character-name").textContent = character.label;
@@ -888,6 +946,12 @@ async function main() {
     // showing the idle loop is indistinguishable from working correctly.
     onRendererStatus: (reason) => {
       const unreachable = reason === "service_unreachable" || reason === "service_closed";
+      if (unreachable && neededServices().lipsync && !state.services.lipsync) {
+        // Still coming up. The startup line is already saying so, and
+        // watchServices will mount as soon as it answers.
+        ensurePolling();
+        return;
+      }
       showError(unreachable ? "err_mt_service" : reason, unreachable ? retryRenderer : null);
       if (unreachable) {
         scheduleRendererRetry();

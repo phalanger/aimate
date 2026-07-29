@@ -73,6 +73,11 @@
             <button id="connect" type="button" class="primary"></button>
             <button id="mute" type="button" class="ghost" data-active="false"></button>
           </div>
+          <!-- Services still coming up. Deliberately not the error box: a
+               service that has not finished loading has not failed, and
+               dressing it as a failure invites retrying something that only
+               needs waiting for. -->
+          <p id="startup" class="notice startup" hidden></p>
           <p id="rec-status" class="notice rec-status" hidden></p>
           <p id="notice" class="notice" hidden></p>
           <div id="error-box" class="error" hidden>
