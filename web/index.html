@@ -178,7 +178,8 @@
               <span id="lb-avatar"></span>
               <button id="ed-rescan" type="button" class="ghost small"></button>
             </div>
-            <div id="ed-avatar-types" class="provider-grid"></div>
+            <select id="ed-avatar-type"></select>
+            <p id="ed-avatar-note" class="field-note"></p>
           </div>
 
           <label class="field" id="ed-vrm-field">
@@ -212,6 +213,10 @@
           </div>
 
           <div class="field" id="ed-musetalk-field">
+            <label class="field">
+              <span id="lb-mt-idle"></span>
+              <select id="ed-mt-idle"></select>
+            </label>
             <label class="field">
               <span id="lb-mt-video"></span>
               <select id="ed-mt-video"></select>
@@ -260,7 +265,7 @@
             <section id="section-llm" class="settings-section">
           <div class="field">
             <span id="lb-provider"></span>
-            <div id="llm-providers" class="provider-grid"></div>
+            <select id="llm-provider-select"></select>
           </div>
 
           <p id="llm-hint" class="field-note"></p>

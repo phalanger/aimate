@@ -55,9 +55,22 @@ export class CharacterEditor {
       }
     });
 
-    for (const id of ["ed-vrm", "ed-motion", "ed-live2d", "ed-idle-video", "ed-talk-video", "ed-mt-video"]) {
+    for (const id of [
+      "ed-vrm",
+      "ed-motion",
+      "ed-live2d",
+      "ed-idle-video",
+      "ed-talk-video",
+      "ed-mt-idle",
+      "ed-mt-video",
+    ]) {
       el(id).addEventListener("change", () => this._captureAvatar());
     }
+    el("ed-avatar-type").addEventListener("change", (event) => {
+      this.avatar.type = event.target.value;
+      this._renderAvatarTypes();
+      this._showLipsyncWarning();
+    });
     el("ed-mt-id").addEventListener("input", () => this._captureAvatar());
     el("ed-rescan").addEventListener("click", () => this._loadAssets());
 
@@ -97,6 +110,7 @@ export class CharacterEditor {
     el("lb-idle-video").textContent = t("lb_idle_video");
     el("lb-talk-video").textContent = t("lb_talk_video");
     el("lb-video-note").textContent = t("lb_video_note");
+    el("lb-mt-idle").textContent = t("lb_mt_idle");
     el("lb-mt-video").textContent = t("lb_mt_video");
     el("lb-mt-id").textContent = t("lb_mt_id");
     el("lb-mt-note").textContent = t("lb_mt_note");
@@ -174,7 +188,10 @@ export class CharacterEditor {
     this._fillSelect("ed-live2d", "live2d", this.avatar.live2d, "dir-live2d");
     this._fillSelect("ed-idle-video", "video", this.avatar.idle_video);
     this._fillSelect("ed-talk-video", "video", this.avatar.talk_video);
-    this._fillSelect("ed-mt-video", "video", this.avatar.idle_video);
+    // Lip sync needs both, and they are different kinds of thing: the clip
+    // loops between turns, the still is what frames are generated from.
+    this._fillSelect("ed-mt-idle", "video", this.avatar.idle_video);
+    this._fillSelect("ed-mt-video", "image", this.avatar.talk_video);
     this._showLipsyncWarning();
   }
 
@@ -234,31 +251,25 @@ export class CharacterEditor {
     }
   }
 
+  // A single-choice list of five, so a select rather than a row of buttons:
+  // the buttons took a whole row and pushed the fields that actually need
+  // filling in below the fold.
   _renderAvatarTypes() {
-    const grid = el("ed-avatar-types");
-    grid.innerHTML = "";
-
-    const types = [
-      ["orb", this.t("avatar_orb")],
-      ["vrm", this.t("avatar_vrm")],
-      ["live2d", this.t("avatar_live2d")],
-      ["video", this.t("avatar_video")],
-      ["musetalk", this.t("avatar_musetalk")],
-    ];
-
-    for (const [value, label] of types) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "provider";
-      button.dataset.active = String(value === this.avatar.type);
-      button.textContent = label;
-      button.addEventListener("click", () => {
-        this.avatar.type = value;
-        this._renderAvatarTypes();
-        this._showLipsyncWarning();
-      });
-      grid.appendChild(button);
+    const types = ["orb", "vrm", "live2d", "video", "musetalk"];
+    const select = el("ed-avatar-type");
+    if (!select.options.length) {
+      for (const value of types) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = this.t("avatar_" + value);
+        select.appendChild(option);
+      }
     }
+    if (types.indexOf(this.avatar.type) < 0) {
+      this.avatar.type = "orb";
+    }
+    select.value = this.avatar.type;
+    el("ed-avatar-note").textContent = this.t("avatar_note_" + this.avatar.type);
 
     // Only show the fields the chosen renderer actually reads.
     el("ed-vrm-field").hidden = this.avatar.type !== "vrm";
@@ -270,13 +281,21 @@ export class CharacterEditor {
 
   _captureAvatar() {
     this.avatar.vrm = el("ed-vrm").value;
-    this.avatar.motion = el("ed-motion").value;
     this.avatar.live2d = el("ed-live2d").value;
-    this.avatar.talk_video = el("ed-talk-video").value;
+    this.avatar.motion = el("ed-motion").value;
     this.avatar.avatar_id = el("ed-mt-id").value.trim();
-    // Both renderers read idle_video; whichever field is visible wins.
-    this.avatar.idle_video =
-      this.avatar.type === "musetalk" ? el("ed-mt-video").value : el("ed-idle-video").value;
+
+    // Read only the fields the visible group owns. Lip sync needs both a clip
+    // and a still and they are not interchangeable - reading them from the
+    // wrong pair is how the reference image ended up saved as idle_video,
+    // which silently replaced the looping clip with a single frame.
+    if (this.avatar.type === "musetalk") {
+      this.avatar.idle_video = el("ed-mt-idle").value;
+      this.avatar.talk_video = el("ed-mt-video").value;
+    } else {
+      this.avatar.idle_video = el("ed-idle-video").value;
+      this.avatar.talk_video = el("ed-talk-video").value;
+    }
   }
 
   // ---------- voices ----------
@@ -463,7 +482,7 @@ export class CharacterEditor {
         body: JSON.stringify({
           avatar_id: avatarId,
           video_path: video,
-          idle_video: (this.avatar || {}).idle_video || "",
+          idle_video: el("ed-mt-idle").value,
         }),
       });
       const data = await response.json();

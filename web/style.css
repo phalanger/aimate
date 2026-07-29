@@ -1097,52 +1097,6 @@ button:active {
   white-space: nowrap;
 }
 
-.provider-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-}
-
-.provider {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 10px 12px;
-  font-size: 13px;
-  text-align: left;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid transparent;
-  border-radius: 10px;
-}
-
-.provider:hover {
-  background: rgba(255, 255, 255, 0.07);
-}
-
-.provider[data-active="true"] {
-  background: var(--accent-soft);
-  border-color: rgba(232, 165, 152, 0.35);
-}
-
-.provider-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.provider-state {
-  flex: none;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  color: var(--text-dim);
-}
-
-.provider-state[data-ok="true"] {
-  color: #6fbf8f;
-}
-
 #llm-model-manual {
   margin-top: 6px;
 }

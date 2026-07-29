@@ -46,6 +46,14 @@ export class LlmSettings {
     for (const id of ["llm-baseurl", "llm-key", "llm-model-manual"]) {
       el(id).addEventListener("input", () => this._captureDraft());
     }
+
+    el("llm-provider-select").addEventListener("change", (event) => {
+      // Capture before switching, or a key typed but not yet saved is lost.
+      this._captureDraft();
+      this.selected = event.target.value;
+      this._renderProviders();
+      this._loadProviderIntoForm(this.selected);
+    });
   }
 
   applyStaticText() {
@@ -88,39 +96,29 @@ export class LlmSettings {
     this._loadProviderIntoForm(this.selected);
   }
 
+  // A select, not a row of buttons: this is a single choice out of a list that
+  // keeps growing, and the buttons pushed the fields being configured off the
+  // visible part of the dialog.
   _renderProviders() {
-    const grid = el("llm-providers");
-    grid.innerHTML = "";
+    const select = el("llm-provider-select");
+    select.innerHTML = "";
 
     for (const [name, provider] of Object.entries(this.config.providers)) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "provider";
-      button.dataset.active = String(name === this.selected);
-
-      const label = document.createElement("span");
-      label.className = "provider-label";
-      label.textContent = provider.label;
-
-      const state = document.createElement("span");
-      state.className = "provider-state";
+      const option = document.createElement("option");
+      option.value = name;
+      // The button grid carried a "key" badge; in a select the same fact has
+      // to live in the option text, since there is nowhere else to put it.
+      const configured = provider.has_key || (this.draft[name] || {}).api_key;
+      let suffix = "";
       if (provider.local) {
-        state.textContent = "";
-      } else {
-        state.textContent = provider.has_key || this.draft[name] ? "key" : "";
-        state.dataset.ok = String(!!(provider.has_key || (this.draft[name] || {}).api_key));
+        suffix = " " + this.t("llm_tag_local");
+      } else if (!configured) {
+        suffix = " " + this.t("llm_tag_nokey");
       }
-
-      button.appendChild(label);
-      button.appendChild(state);
-      button.addEventListener("click", () => {
-        this._captureDraft();
-        this.selected = name;
-        this._renderProviders();
-        this._loadProviderIntoForm(name);
-      });
-      grid.appendChild(button);
+      option.textContent = provider.label + suffix;
+      select.appendChild(option);
     }
+    select.value = this.selected;
   }
 
   _captureDraft() {

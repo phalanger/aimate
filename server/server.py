@@ -626,6 +626,13 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "dir": "assets\media\\",
                 "items": scan("media", (".mp4", ".webm", ".mov", ".mkv")),
             },
+            # Stills live beside the clips because they are the same kind of
+            # material: the FlashHead backend generates from one image, and its
+            # idle loop is the clip next to it.
+            "image": {
+                "dir": "assets\media\\",
+                "items": scan("media", (".png", ".jpg", ".jpeg", ".webp")),
+            },
         }
 
     def _list_voices(self):
