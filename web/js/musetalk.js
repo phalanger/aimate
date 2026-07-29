@@ -35,6 +35,11 @@ const PIPELINE_SAMPLE_RATE = 16000;
 // second of a stopped playhead before the turn is called finished.
 const IDLE_REPORTS_TO_END = 20;
 
+// How long to wait for the service to answer a new connection before
+// treating it as unreachable. Generous: it only has to beat a human
+// noticing, and the service answers in milliseconds when it is healthy.
+const CONNECT_TIMEOUT_MS = 8000;
+
 function base64ToBytes(base64) {
   const binary = atob(base64);
   const out = new Uint8Array(binary.length);
@@ -141,13 +146,27 @@ export class MuseTalkStage {
       socket.binaryType = "arraybuffer";
       this.socket = socket;
 
+      // A socket that opens and then says nothing would leave this promise
+      // pending for ever. That is not a stalled connection but a stalled app:
+      // mount() never returns, so the stage stays mid-swap, and from then on
+      // every retry and every character switch returns immediately without
+      // doing anything. Reloading the page was the only way out.
+      const timer = setTimeout(() => {
+        fail("service_unreachable");
+      }, CONNECT_TIMEOUT_MS);
+
+      const settle = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+
       // Without this, a service that is down looks identical to one that is
       // working but silent: the idle clip loops and the mouth never moves,
       // with nothing anywhere to say why.
       const fail = (reason) => {
         this.ready = false;
         this._report(reason);
-        resolve();
+        settle();
       };
 
       socket.onmessage = (message) => {
@@ -159,19 +178,19 @@ export class MuseTalkStage {
         }
         this._handle(event);
         if (event.type === "ready") {
-          resolve();
+          settle();
         }
       };
       socket.onerror = () => {
         if (!this.disposed) {
           fail("service_unreachable");
         } else {
-          resolve();
+          settle();
         }
       };
       socket.onclose = () => {
         if (this.disposed) {
-          resolve();
+          settle();
           return;
         }
         if (!this.ready) {

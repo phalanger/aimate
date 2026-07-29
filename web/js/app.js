@@ -68,6 +68,9 @@ const state = {
   // The speaker's sample counter runs for the whole session; subtitles are
   // timed per reply, so the turn's origin has to be captured separately.
   replyBase: null,
+  autoRetries: 0,
+  retryTimer: null,
+  retryAction: null,
 };
 
 function el(id) {
@@ -105,6 +108,20 @@ function clearError() {
   el("error-retry").hidden = true;
 }
 
+// A dropped renderer usually means the service is still starting, so the first
+// few attempts are made without asking. The button stays for when they run out.
+const AUTO_RETRIES = 4;
+const AUTO_RETRY_MS = 4000;
+
+function scheduleRendererRetry() {
+  if (state.autoRetries >= AUTO_RETRIES) {
+    return;
+  }
+  state.autoRetries += 1;
+  clearTimeout(state.retryTimer);
+  state.retryTimer = setTimeout(() => retryRenderer(), AUTO_RETRY_MS);
+}
+
 // Re-mounts the current character's renderer. The service usually just needs
 // starting, and reconnecting is cheaper and less disruptive than reloading the
 // page and losing the conversation.
@@ -123,6 +140,7 @@ async function retryRenderer() {
       const data = await response.json();
       if (!data.up) {
         showError("retry_failed", retryRenderer);
+        scheduleRendererRetry();
         return;
       }
     }
@@ -132,6 +150,7 @@ async function retryRenderer() {
     }
   } catch (err) {
     showError("retry_failed", retryRenderer);
+    scheduleRendererRetry();
   } finally {
     button.disabled = false;
   }
@@ -535,6 +554,9 @@ function selectCharacter(id) {
     return;
   }
   state.characterId = id;
+  // Fresh budget: this is a new attempt at a different thing.
+  state.autoRetries = 0;
+  clearTimeout(state.retryTimer);
   rememberCharacter(id);
   renderCharacterList();
   el("character-name").textContent = character.label;
@@ -867,6 +889,9 @@ async function main() {
     onRendererStatus: (reason) => {
       const unreachable = reason === "service_unreachable" || reason === "service_closed";
       showError(unreachable ? "err_mt_service" : reason, unreachable ? retryRenderer : null);
+      if (unreachable) {
+        scheduleRendererRetry();
+      }
       // A renderer that failed will never signal the picture is ready, so
       // stop waiting for it rather than losing the audio entirely.
       clearTimeout(state.releaseTimer);
