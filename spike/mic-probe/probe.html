@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>麦克风探针</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 28px;
+        font-family: "Microsoft YaHei", system-ui, sans-serif;
+        background: #12131a;
+        color: #e9e9ee;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 19px;
+      }
+      p.sub {
+        margin: 0 0 20px;
+        font-size: 13px;
+        color: #9a9aa6;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        padding: 11px 14px;
+        margin-bottom: 6px;
+        font-size: 14px;
+        background: rgba(255, 255, 255, 0.04);
+        border-left: 3px solid #555;
+        border-radius: 6px;
+      }
+      .row[data-state="ok"] {
+        border-left-color: #6fbf8f;
+      }
+      .row[data-state="bad"] {
+        border-left-color: #e88b8b;
+      }
+      .row[data-state="wait"] {
+        border-left-color: #d9c07a;
+      }
+      .key {
+        flex: none;
+        width: 210px;
+        color: #9a9aa6;
+      }
+      .val {
+        flex: 1;
+        word-break: break-word;
+      }
+      #verdict {
+        margin-top: 22px;
+        padding: 16px;
+        font-size: 16px;
+        font-weight: 700;
+        text-align: center;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.05);
+      }
+      #verdict[data-state="ok"] {
+        color: #0e1a12;
+        background: #6fbf8f;
+      }
+      #verdict[data-state="bad"] {
+        color: #2a0f0f;
+        background: #e88b8b;
+      }
+      .note {
+        margin-top: 16px;
+        font-size: 13px;
+        line-height: 1.7;
+        color: #9a9aa6;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>WebView2 麦克风探针</h1>
+    <p class="sub">
+      这个窗口是 wry（Tauri 用的 webview 层）打开的嵌入式 WebView2。
+      它在验证：把面板做成桌面程序之后，麦克风还能不能用。
+    </p>
+
+    <div id="rows"></div>
+    <div id="verdict" data-state="wait">检测中…</div>
+
+    <p class="note">
+      关键在于失败时的错误名：<b>NotAllowedError</b> 是权限被拒（Tauri 的已知问题），
+      <b>NotFoundError</b> 是没有麦克风设备——后者说明权限这一关是通的，
+      换台有麦克风的机器就能用。
+    </p>
+
+    <script>
+      const rows = document.getElementById("rows");
+      const verdict = document.getElementById("verdict");
+      const report = [];
+
+      function add(key, value, state) {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.dataset.state = state || "";
+        const k = document.createElement("span");
+        k.className = "key";
+        k.textContent = key;
+        const v = document.createElement("span");
+        v.className = "val";
+        v.textContent = String(value);
+        row.appendChild(k);
+        row.appendChild(v);
+        rows.appendChild(row);
+        report.push({ key, value: String(value), state: state || "" });
+        send();
+      }
+
+      let timer = null;
+      function send() {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          fetch("/report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ report, verdict: verdict.textContent }),
+          }).catch(() => {});
+        }, 150);
+      }
+
+      function finish(ok, text) {
+        verdict.dataset.state = ok ? "ok" : "bad";
+        verdict.textContent = text;
+        send();
+      }
+
+      async function run() {
+        add("User-Agent", navigator.userAgent);
+        add("isSecureContext", window.isSecureContext, window.isSecureContext ? "ok" : "bad");
+
+        const hasMedia = !!navigator.mediaDevices;
+        add("navigator.mediaDevices", hasMedia ? "存在" : "undefined", hasMedia ? "ok" : "bad");
+        if (!hasMedia) {
+          finish(false, "失败：不是安全上下文，mediaDevices 根本不存在");
+          return;
+        }
+
+        add("AudioWorklet", typeof AudioWorklet !== "undefined" ? "支持" : "缺失",
+            typeof AudioWorklet !== "undefined" ? "ok" : "bad");
+        add("MediaRecorder", typeof MediaRecorder !== "undefined" ? "支持" : "缺失",
+            typeof MediaRecorder !== "undefined" ? "ok" : "bad");
+        add("canvas.captureStream",
+            typeof HTMLCanvasElement.prototype.captureStream === "function" ? "支持" : "缺失",
+            typeof HTMLCanvasElement.prototype.captureStream === "function" ? "ok" : "bad");
+
+        // Before permission is granted, device labels come back empty. That is
+        // itself a useful signal about which side of the gate we are on.
+        try {
+          const before = await navigator.mediaDevices.enumerateDevices();
+          const inputs = before.filter((d) => d.kind === "audioinput");
+          add("授权前的音频输入设备", inputs.length + " 个");
+          add("授权前设备名可见", inputs.some((d) => d.label) ? "是（已有权限）" : "否（正常）");
+        } catch (err) {
+          add("enumerateDevices", err.name + ": " + err.message, "bad");
+        }
+
+        add("正在请求麦克风", "如果弹出授权框，请点「允许」…", "wait");
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+            video: false,
+          });
+          const track = stream.getAudioTracks()[0];
+          add("getUserMedia", "成功", "ok");
+          add("拿到的设备", track ? track.label || "(无名称)" : "(无轨道)", "ok");
+          if (track && track.getSettings) {
+            const s = track.getSettings();
+            add("回声消除", s.echoCancellation === undefined ? "未报告" : String(s.echoCancellation));
+            add("采样率", s.sampleRate === undefined ? "未报告" : String(s.sampleRate));
+          }
+
+          // The panel pins the context to 16 kHz and loads two worklets; if
+          // that fails here it fails in the real app too.
+          try {
+            const ctx = new AudioContext({ sampleRate: 16000 });
+            const src = ctx.createMediaStreamSource(stream);
+            add("16kHz AudioContext + MediaStreamSource", "成功（" + ctx.sampleRate + " Hz）", "ok");
+            src.disconnect();
+            await ctx.close();
+          } catch (err) {
+            add("AudioContext", err.name + ": " + err.message, "bad");
+          }
+
+          for (const t of stream.getTracks()) t.stop();
+          finish(true, "通过：嵌入式 WebView2 可以拿到麦克风，Tauri 方案可行");
+        } catch (err) {
+          add("getUserMedia", err.name + ": " + err.message, "bad");
+          if (err.name === "NotFoundError" || err.name === "OverconstrainedError") {
+            finish(true, "权限这一关通过：报的是「没有设备」，不是「被拒绝」");
+          } else if (err.name === "NotAllowedError") {
+            finish(false, "被拒绝：需要在 Rust 侧处理 PermissionRequested");
+          } else {
+            finish(false, "失败：" + err.name);
+          }
+        }
+      }
+
+      run();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+[package]
+name = "webview-mic"
+version = "0.1.0"
+edition = "2021"
+
+# wry is the webview layer Tauri is built on, and it is where the WebView2
+# instance is actually created. Testing it directly answers the question -
+# does an embedded WebView2 grant microphone access - without the Tauri CLI,
+# a frontend bundler or a node toolchain.
+[dependencies]
+wry = "0.55"
+tao = "0.35"
+
+[profile.dev]
+# The spike is run once by hand; compile time matters more than speed.
+opt-level = 0
