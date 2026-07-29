@@ -53,6 +53,24 @@ COLORS = ("36", "33", "35", "32", "34", "91")
 RESET = "\033[0m"
 
 
+def force_utf8():
+    """Write UTF-8 whatever we are attached to.
+
+    Launched from a terminal, stdout is the console and Python picks a codec
+    that can carry what the services print. Launched from the desktop shell it
+    is a redirected file, and Python falls back to the system codepage - GBK
+    here - which cannot encode U+FFFD. A single undecodable byte from a child
+    then raised UnicodeEncodeError inside the reader thread and killed it, so
+    that service stopped being logged and would eventually block on a full
+    pipe.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def enable_ansi():
     """Windows consoles need virtual terminal processing turned on explicitly."""
     if os.name != "nt":
@@ -255,8 +273,14 @@ class Supervisor:
     def say(self, service, message, colour=None):
         line = (service.tag() + " " if service else "") + paint(message, colour)
         with self.lock:
-            sys.stdout.write(line + "\n")
-            sys.stdout.flush()
+            try:
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+            except Exception:
+                # Never let the console kill a reader thread. The per-service
+                # log file is written before this is called, so the line is
+                # already safe on disk either way.
+                pass
 
     # ---------- process handling ----------
 
@@ -272,6 +296,10 @@ class Supervisor:
         # Unbuffered, so a crashing child's last words are not lost in a pipe
         # buffer - which is exactly when they matter most.
         environment["PYTHONUNBUFFERED"] = "1"
+        # And UTF-8 both ways: a child writing to a pipe otherwise picks the
+        # system codepage, which cannot carry the paths and library messages
+        # that turn up here. The reader decodes UTF-8.
+        environment["PYTHONIOENCODING"] = "utf-8"
 
         flags = 0
         if os.name == "nt":
@@ -335,6 +363,10 @@ class Supervisor:
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 capture_output=True,
+                # Under the desktop shell this process has no console of its
+                # own, so starting a console program would be given a fresh
+                # window - a black flash on every shutdown.
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
             process.terminate()
@@ -478,6 +510,7 @@ def main():
     )
     args = parser.parse_args()
 
+    force_utf8()
     services, variables = load_services()
 
     if args.only:

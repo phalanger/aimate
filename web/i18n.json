@@ -86,6 +86,7 @@
   "lb_mt_note": "必须先点「准备形象」：逐帧做人脸检测和编码并缓存，约一到两分钟，每个形象只做一次。要求正面、25fps、能循环。分辨率建议 720p，再高没有意义——嘴部是按 256×256 重新生成的，输出还会压到 576p 高度，源片更大只会让准备和合成更慢。",
   "btn_mt_prepare": "准备形象",
   "mt_preparing": "正在准备，逐帧处理中，请稍候…",
+  "mt_not_ready": "口型服务还在启动（要把模型加载到显卡，约一分钟）。等一下再点。如果一直这样，看 var\\logs\\lipsync.log。",
   "mt_prepared": "准备完成：{frames} 帧已缓存。",
   "err_mt_prepare": "准备失败：",
   "err_mt_service": "连不上口型服务。运行 scripts\\start-musetalk.ps1 启动它，然后点重试。",

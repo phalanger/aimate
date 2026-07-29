@@ -23,6 +23,7 @@
 use std::fs::File;
 use std::io;
 use std::net::TcpStream;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -42,6 +43,11 @@ const PANEL_URL: &str = "http://127.0.0.1:8900/";
 // that, and the panel is all this waits for - the page shows its own status
 // for the rest.
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
+
+// This is a GUI process, so every console program it starts would otherwise
+// be given a console window of its own - one flashing up for the supervisor
+// on launch, another for taskkill on the way out.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug)]
 enum UserEvent {
@@ -157,6 +163,7 @@ fn start_supervisor(root: &Path, python: &str) -> io::Result<Child> {
         // when the GPU is wanted for something else.
         .args(std::env::args().skip(1))
         .current_dir(root)
+        .creation_flags(CREATE_NO_WINDOW)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(errors))
         .spawn()
@@ -168,6 +175,7 @@ fn stop_supervisor(child: &mut Child) {
     // makes the next launch fail.
     let _ = Command::new("taskkill")
         .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();

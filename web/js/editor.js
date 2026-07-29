@@ -434,6 +434,23 @@ export class CharacterEditor {
       return;
     }
     status.dataset.warn = "false";
+
+    // Checked first because the service takes about a minute to put its models
+    // on the GPU, and the panel is usable long before that. Going straight to
+    // prepare during that window fails with a raw "connection refused", which
+    // reads as a broken install rather than as "not up yet".
+    try {
+      const health = await fetch("/api/musetalk/status", { cache: "no-store" });
+      const state = await health.json();
+      if (!state.up) {
+        status.dataset.warn = "true";
+        status.textContent = this.t("mt_not_ready");
+        return;
+      }
+    } catch (err) {
+      // The panel itself is unreachable; let the attempt below report it.
+    }
+
     status.textContent = this.t("mt_preparing");
 
     try {
