@@ -142,10 +142,30 @@ class Avatar:
             self.load()
             return
 
-        if os.path.isdir(self.root):
-            shutil.rmtree(self.root)
-        for path in (self.root, self.full_imgs_path, self.mask_path):
-            os.makedirs(path, exist_ok=True)
+        # Frames are extracted before the existing cache is touched. Preparing
+        # is destructive and takes a minute or two, and the source is only
+        # found to be unusable partway in - a wrong path, or a clip with no
+        # detectable face. Clearing first means a failed attempt destroys the
+        # avatar that was working, and the only way back is to prepare it all
+        # over again.
+        staging = self.root + ".staging"
+        shutil.rmtree(staging, ignore_errors=True)
+        os.makedirs(staging, exist_ok=True)
+        try:
+            video_to_frames(self.video_path, staging)
+            images = sorted(glob.glob(os.path.join(staging, "*.png")))
+            if not images:
+                raise RuntimeError("no frames extracted from %s" % self.video_path)
+
+            if os.path.isdir(self.root):
+                shutil.rmtree(self.root)
+            for path in (self.root, self.mask_path):
+                os.makedirs(path, exist_ok=True)
+            os.replace(staging, self.full_imgs_path)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        images = sorted(glob.glob(os.path.join(self.full_imgs_path, "*.png")))
 
         with open(self.info_path, "w", encoding="utf-8") as handle:
             json.dump(
@@ -157,11 +177,6 @@ class Avatar:
                 },
                 handle,
             )
-
-        video_to_frames(self.video_path, self.full_imgs_path)
-        images = sorted(glob.glob(os.path.join(self.full_imgs_path, "*.png")))
-        if not images:
-            raise RuntimeError("no frames extracted from %s" % self.video_path)
 
         coords, frames = get_landmark_and_bbox(images, self.bbox_shift)
 
