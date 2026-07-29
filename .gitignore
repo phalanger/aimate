@@ -27,6 +27,10 @@
 /app/target/
 /spike/*/target/
 
+# A third-party checkout with its own history, plus 8 GB of weights beside it.
+# What the spike concluded lives in docs/, not here.
+/spike/flashhead/
+
 # The shell binary, copied to the root by scripts\build-shell.ps1.
 /mate.exe
 
