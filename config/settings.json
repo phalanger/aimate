@@ -83,7 +83,7 @@
             }
           ],
           "label": "动作选择方式",
-          "help": "「按语境」是拿她这句回复的文字匹配关键词，规则在 panel\\motions.json 里，可以自己改。不额外调用模型，所以不增加延迟。"
+          "help": "「按语境」是拿她这句回复的文字匹配关键词，规则在 web\\motions.json 里，可以自己改。不额外调用模型，所以不增加延迟。"
         },
         {
           "key": "motion_once",
@@ -177,7 +177,7 @@
           "type": "bool",
           "value": true,
           "label": "关键词高亮",
-          "help": "命中 panel\\motions.json 里那些情绪关键词的字换个颜色，和动作选择用的是同一份规则，改一处两处都变。",
+          "help": "命中 web\\motions.json 里那些情绪关键词的字换个颜色，和动作选择用的是同一份规则，改一处两处都变。",
           "depends": "subtitle_show"
         },
         {
@@ -277,7 +277,7 @@
     {
       "id": "resources",
       "label": "素材",
-      "help": "下载后放进对应目录，再到角色编辑里填路径：VRM 放 panel\\models\\，Live2D 放 panel\\models\\live2d\\，视频放 panel\\media\\。",
+      "help": "下载后放进对应目录，再到角色编辑里用下拉框选：VRM 放 assets\\models\\，Live2D 放 assets\\models\\live2d\\，视频放 assets\\media\\。真人口型的源视频建议 720p、25fps、正面、能循环。",
       "items": [
         {
           "key": "links_vrm",
@@ -331,7 +331,7 @@
           "key": "links_motion",
           "type": "links",
           "label": "动作文件（.vrma）",
-          "help": "项目里已经预置了 11 个动作（MIT 协议）在 panel\\models\\motions\\，角色编辑的「动作文件」里填 models/motions/Relax.vrma 这样的路径即可。想要更多可以从下面找，或用 Mixamo 的动作转换成 vrma。",
+          "help": "项目里已经预置了 11 个动作（MIT 协议）在 assets\\models\\motions\\，角色编辑的「动作文件」下拉框里直接选。想要更多可以从下面找，或用 Mixamo 的动作转换成 vrma。",
           "links": [
             {
               "label": "BOOTH · 搜索 vrma 动作",
