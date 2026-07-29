@@ -308,7 +308,17 @@ class Avatar:
         # size, which at 25 fps is not affordable.
         frame = self.frame_cycle[position].copy()
         x1, y1, x2, y2 = bbox
-        resized = cv2.resize(face.astype(np.uint8), (x2 - x1, y2 - y1))
+        # Lanczos, not cv2.resize's default bilinear. The model always returns
+        # 256x256 and it has to be resampled to whatever the face bbox is, so
+        # this runs on every generated frame - and bilinear was measurably
+        # costing sharpness in both directions: on the three prepared avatars
+        # here it lost 25%, 44% and 56% of Laplacian variance against Lanczos.
+        #
+        # The preparation path already uses Lanczos for the crop going in; this
+        # is the same resample coming back out, and it should match.
+        resized = cv2.resize(
+            face.astype(np.uint8), (x2 - x1, y2 - y1), interpolation=cv2.INTER_LANCZOS4
+        )
         return get_image_blending(
             frame,
             resized,
