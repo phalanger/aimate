@@ -67,31 +67,53 @@ TTS 模型分两档使用：
 
 ## 三、目录结构
 
+目录按**更新时该怎么处理它**分层，而不是按技术类型分。这样打包和升级才有明确边界：
+代码可以整个替换，用户数据绝不能碰，运行时和产物可以随便删。
+
 ```text
 I:\ai\code\mate\
-├── docs\
-│   ├── 01-analysis.md          分析文档
-│   ├── 02-design.md            本文档
-│   └── 03-user-guide.md        用户指南与排错表
-├── models\
-│   ├── qwen3-tts-base\         Qwen3-TTS 克隆模型
-│   ├── qwen3-tts-custom\       Qwen3-TTS 预设音色模型
-│   └── *.gguf                  LLM 权重
-├── voices\
-│   └── *.wav                   参考音频（5-10 秒，单声道，24 kHz）
-├── panel\
-│   ├── characters.json         人格与音色配置
-│   ├── registry.py             热切换服务
-│   └── index.html              面板前端
+├── web\                        前端            ← 更新时整个替换
+│   ├── index.html style.css
+│   ├── js\ worklets\ vendor\
+│   ├── i18n.json               界面文案（源码保持纯 ASCII，见 5.5）
+│   └── motions.json            动作与字幕高亮的关键词规则
+├── server\                     面板服务端      ← 更新时整个替换
+│   ├── server.py               静态服务 + 配置 API + LLM 代理
+│   ├── llm_router.py           多供应商路由
+│   └── transcribe.py           参考音频转写
+├── services\
+│   └── lipsync\                MuseTalk 服务（独立 conda 环境）
 ├── scripts\
-│   ├── start-llm.ps1           启动 llama-server
-│   ├── start-mate.ps1          启动主流水线
-│   └── start-all.ps1           一键启动
-├── logs\
-└── llama.cpp\                  llama-server 可执行文件
+│   ├── supervisor.py           进程管理
+│   ├── services.json           进程表（唯一事实来源）
+│   └── start-*.ps1             supervisor 的薄封装
+├── config\                     ← 用户数据，绝不能碰
+│   ├── characters.json         人格与音色配置
+│   ├── settings.json           运行时开关（自描述，界面自动生成）
+│   ├── providers.json          LLM 供应商定义
+│   └── llm.json                API key（不入库）
+├── assets\                     ← 用户素材，绝不能碰
+│   ├── models\                 VRM、Live2D、动作
+│   ├── media\                  真人素材视频
+│   └── voices\                 参考音频
+├── runtime\                    ← 单独下载，不入库
+│   ├── models\                 TTS 与 LLM 权重
+│   ├── musetalk\               MuseTalk 上游仓库与权重
+│   └── bin\                    ffmpeg（GPL 静态版）
+├── var\                        ← 随时可删
+│   ├── logs\ recordings\
+│   └── cache-lipsync\          已准备好的形象缓存
+├── spike\                      一次性验证程序
+└── docs\
 ```
 
+关键点：**素材和用户配置不在被服务的代码目录里**。它们原本就放在 `panel\` 下，
+那样一次更新覆盖 `panel\` 就会连角色、设置和素材一起抹掉。`web\` 是文档根，
+`assets\models` 和 `assets\media` 通过 `/assets/` 挂载出去，让浏览器仍然取得到。
+
 Python 运行环境为独立的 conda 环境 `s2s`（Python 3.11），不污染 Anaconda base。
+MuseTalk 另有一个 `musetalk` 环境，两者的 torch 与 CUDA 版本不兼容，见
+[04-packaging.md](./04-packaging.md)。
 
 ## 四、运行流程
 
@@ -142,7 +164,7 @@ Python 运行环境为独立的 conda 环境 `s2s`（Python 3.11），不污染 
 
 ### 5.3 配置格式
 
-`panel/characters.json` 定义角色，每个角色绑定音色、参考文本、LLM 与人格：
+`config/characters.json` 定义角色，每个角色绑定音色、参考文本、LLM 与人格：
 
 ```json
 {
@@ -177,8 +199,12 @@ Python 运行环境为独立的 conda 环境 `s2s`（Python 3.11），不污染 
 
 ### 5.5 编码约束
 
-按 CLAUDE.md 第 3 条，`panel/registry.py` 等 Python 源码文件只含 ASCII 字符，
-中文内容一律放在 `characters.json` 数据文件与文档中。
+按 CLAUDE.md 第 3 条，`server/server.py`、`web/js/*.js` 等源码文件只含 ASCII
+字符。所有中文都放在数据文件里：界面文案在 `web/i18n.json`，设置项的标签和说明在
+`config/settings.json`，人格在 `config/characters.json`。
+
+副作用是好的：改一个措辞不用碰代码，而且这些文件本来就是自描述的——设置界面是按
+`settings.json` 自动生成的，加一个开关只要加一条 JSON。
 
 ## 六、画中画、字幕与录制
 
@@ -214,7 +240,7 @@ Python 运行环境为独立的 conda 环境 `s2s`（Python 3.11），不污染 
 
 ### 6.3 高亮复用动作关键词
 
-字幕高亮和动作选择用同一份 `panel/motions.json`。能挑出一个动作的词，就是值得
+字幕高亮和动作选择用同一份 `web/motions.json`。能挑出一个动作的词，就是值得
 强调的词；分成两份列表只会各自漂移。
 
 两条过滤规则：标了 `"emphasis": false` 的规则不参与高亮（「可能」「嗯」这类是语气词），

@@ -35,13 +35,18 @@ import time
 import traceback
 from pathlib import Path
 
+# This file lives at <root>/services/lipsync/, so the project root is two
+# levels up. Everything else is derived from it rather than from the working
+# directory, which is not ours to depend on.
+ROOT = Path(__file__).resolve().parents[2]
+
 # MuseTalk imports resolve against its repo root.
-REPO = Path(__file__).resolve().parent.parent / "musetalk"
+REPO = ROOT / "runtime" / "musetalk"
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 DEFAULT_HOST = "127.0.0.1"
-PANEL_SETTINGS = Path(__file__).resolve().parent.parent / "panel" / "settings.json"
+PANEL_SETTINGS = ROOT / "config" / "settings.json"
 
 
 def read_lan_setting():
@@ -365,7 +370,9 @@ def main():
     parser.add_argument("--unet_config", default=str(REPO / "models/musetalkV15/musetalk.json"))
     parser.add_argument("--vae_type", default="sd-vae")
     parser.add_argument("--whisper_dir", default=str(REPO / "models/whisper"))
-    parser.add_argument("--cache_dir", default=str(Path(__file__).resolve().parent / "cache"))
+    # Prepared avatars are derived data: expensive to rebuild, but rebuildable,
+    # so they belong in var/ with the rest of what can be deleted safely.
+    parser.add_argument("--cache_dir", default=str(ROOT / "var" / "cache-lipsync"))
     parser.add_argument("--fps", type=int, default=DEFAULT_FPS)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--extra_margin", type=int, default=10)

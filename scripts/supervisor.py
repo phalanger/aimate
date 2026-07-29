@@ -41,7 +41,7 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CONFIG = os.path.join(HERE, "services.json")
-LOG_DIR = os.path.join(ROOT, "logs")
+LOG_DIR = os.path.join(ROOT, "var", "logs")
 
 # A service that dies more often than this is not going to be fixed by trying
 # again; it needs a human to read the log.
@@ -147,7 +147,7 @@ def read_lan_setting():
     network with a voice server bound to loopback loads the page on another
     device and then fails to connect, with nothing obvious to point at.
     """
-    path = os.path.join(ROOT, "panel", "settings.json")
+    path = os.path.join(ROOT, "config", "settings.json")
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
@@ -377,7 +377,7 @@ class Supervisor:
                     service.gave_up = True
                     self.say(
                         service,
-                        "giving up after %d restarts - see logs\\%s.log"
+                        "giving up after %d restarts - see var\\logs\\%s.log"
                         % (MAX_RESTARTS, service.id),
                         "91",
                     )

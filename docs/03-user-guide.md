@@ -27,7 +27,7 @@ I:\ai\code\mate\scripts\start-all.ps1
 
 - 按依赖顺序启动（语音流水线要等面板起来，因为它启动时会做一次预热的 LLM 调用）
 - **探活而不是 sleep**：探到端口/接口真的响应了才继续
-- 日志按服务加前缀、上色，合并到一个窗口，同时分别落到 `logs\<服务>.log`
+- 日志按服务加前缀、上色，合并到一个窗口，同时分别落到 `var\logs\<服务>.log`
 - 崩溃自动重启，退避 2/5/15 秒，两分钟内超过三次就放弃并告诉你去看哪个日志
 - 端口已经被占用时**接管而不是报错**——面板已经在跑就不重复启动
 - Ctrl+C 按依赖倒序停止，用 `taskkill /T` 连孙进程一起收掉（torch 会起 worker，
@@ -81,12 +81,12 @@ Ollama 用 11700 而不是默认的 11434，因为本机 11428–11527 落在 Wi
 
 ## 三、换角色与换人格
 
-编辑 `panel\characters.json`，照着已有的复制一份即可。每个角色包含：
+编辑 `config\characters.json`，照着已有的复制一份即可。每个角色包含：
 
 | 字段 | 说明 |
 | --- | --- |
 | `label` / `subtitle` | 面板上显示的名字与副标题 |
-| `vrm` | VRM 模型路径，相对于 `panel\` 目录 |
+| `vrm` | VRM 模型路径，相对于 `assets\` 目录 |
 | `voice` | 参考音频的**绝对路径**，由服务端读取 |
 | `ref_text` | 参考音频的逐字转录，必须和音频内容一致 |
 | `emotion` | 待机表情：`neutral` / `happy` / `sad` / `angry` / `relaxed` |
@@ -120,7 +120,7 @@ Qwen3-TTS 靠一段参考音频克隆音色。音频质量直接决定听起来�
 用 ffmpeg 从任意音频裁一段：
 
 ```powershell
-ffmpeg -i 原始音频.mp3 -ss 00:00:12 -t 8 -ac 1 -ar 24000 I:\ai\code\mate\voices\xiaoman.wav
+ffmpeg -i 原始音频.mp3 -ss 00:00:12 -t 8 -ac 1 -ar 24000 I:\ai\code\mate\assets\voices\xiaoman.wav
 ```
 
 参数含义：`-ss 00:00:12` 从第 12 秒开始，`-t 8` 截取 8 秒，`-ac 1` 转单声道，
@@ -128,7 +128,7 @@ ffmpeg -i 原始音频.mp3 -ss 00:00:12 -t 8 -ac 1 -ar 24000 I:\ai\code\mate\voi
 
 然后改两个地方，**必须成对修改**：
 
-1. `panel\characters.json` 里该角色的 `voice` 指向新 wav，`ref_text` 改成这段音频的
+1. `config\characters.json` 里该角色的 `voice` 指向新 wav，`ref_text` 改成这段音频的
    逐字转录。
 2. 如果要改默认音色，同时更新 `scripts\config.ps1` 里的 `$Global:RefAudio` 和
    `$Global:RefText`。
@@ -141,13 +141,13 @@ ffmpeg -i 原始音频.mp3 -ss 00:00:12 -t 8 -ac 1 -ar 24000 I:\ai\code\mate\voi
 
 ## 五、换 3D 形象
 
-当前用的是 three-vrm 官方示例模型 `panel\models\sample.vrm`，只是个测试用的素模。
+当前用的是 three-vrm 官方示例模型 `assets\models\sample.vrm`，只是个测试用的素模。
 
 换成你想要的角色：
 
 1. 从 [VRoid Hub](https://hub.vroid.com/) 下载 VRM 模型，或用
    [VRoid Studio](https://vroid.com/studio) 自己捏一个（免费，导出 VRM）。
-2. 放进 `panel\models\`。
+2. 放进 `assets\models\`。
 3. 改 `characters.json` 里该角色的 `vrm` 字段。
 
 VRM 0.x 和 1.0 两种规范都支持，代码里已经做了朝向归一化处理。
@@ -187,7 +187,7 @@ VRM 0.x 和 1.0 两种规范都支持，代码里已经做了朝向归一化处�
 在「设置 → 字幕」里调字体、字号、颜色、描边、位置。字号按画面高度的百分比算，
 换窗口大小或分辨率都不用重调。
 
-**关键词高亮**用的是 `panel\motions.json` 里那份情绪关键词——和动作选择同一份规则，
+**关键词高亮**用的是 `web\motions.json` 里那份情绪关键词——和动作选择同一份规则，
 改一处两处都变。加了 `"emphasis": false` 的规则只参与动作选择，不参与高亮（像
 「可能」「嗯」这种语气词，标出来反而乱）。单个字的关键词也不参与高亮，因为在中文里
 太容易夹在别的词中间。
@@ -200,7 +200,7 @@ TTS 只返回音频。回复只有一两句时这个近似足够准。直播时�
 ### 保存视频
 
 点 ⤓ 会**把上一条回复重播一遍并录下来**，所以耗时和这条回复本身一样长。录制中图标
-变成 ■，再点一次取消。文件写到 `recordings\`。
+变成 ■，再点一次取消。文件写到 `var\recordings\`。
 
 五种显示方式**都能保存**，包括圆环、2D 和 3D——录的是画面本身，谁画的不重要。
 
@@ -252,7 +252,7 @@ Qwen3-TTS 不只需要根目录的权重，还需要一个 `speech_tokenizer/` �
 speech_tokenizer/config.json`。完整结构：
 
 ```text
-models\qwen3-tts-base\
+runtime\models\qwen3-tts-base\
 ├── config.json
 ├── configuration.json
 ├── generation_config.json
@@ -272,7 +272,7 @@ models\qwen3-tts-base\
 
 ```powershell
 $ms = "https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base/resolve/master/speech_tokenizer"
-$dst = "I:\ai\code\mate\models\qwen3-tts-base\speech_tokenizer"
+$dst = "I:\ai\code\mate\runtime\models\qwen3-tts-base\speech_tokenizer"
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 foreach ($f in "config.json","configuration.json","preprocessor_config.json","model.safetensors") {
     curl.exe -L -o "$dst\$f" "$ms/$f"

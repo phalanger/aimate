@@ -56,6 +56,6 @@ try {
     Write-Host ("LLM OK. Reply: {0}" -f $reply.choices[0].message.content) -ForegroundColor Green
 } catch {
     Write-Host "ERROR: model did not respond: $_" -ForegroundColor Red
-    Write-Host "If the model is missing:  ollama create $Global:LlmModel -f models\Modelfile"
+    Write-Host "If the model is missing:  ollama create $Global:LlmModel -f runtime\models\Modelfile"
     exit 1
 }

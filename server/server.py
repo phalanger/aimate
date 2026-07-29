@@ -1,12 +1,23 @@
 """Server for the companion panel: static files plus a small config API.
 
-Deliberately stdlib-only. The API surface is four endpoints against local
-files, so a web framework would add an install step for nothing. Binds to
-loopback only - none of this is meant to be reachable from the network.
+Deliberately stdlib-only. The API surface is a handful of endpoints against
+local files, so a web framework would add an install step for nothing. Binds
+to loopback unless the user opts into LAN access.
 
 Serving over HTTP rather than opening index.html directly matters: ES modules,
 fetch() and AudioWorklet.addModule all fail under the file:// origin, and
-getUserMedia needs a secure context, which 127.0.0.1 counts as.
+getUserMedia needs a secure context, which 127.0.0.1 counts as. That last
+point is also why the desktop shell points its webview at this server rather
+than bundling the page - see docs/04-packaging.md.
+
+Three directories, separated by what an update does to them:
+
+    web/      the page and its modules      replaced on update
+    config/   characters, settings, keys    never touched
+    assets/   VRM, Live2D, video, voices    never touched
+
+web/ is the document root; assets/models and assets/media are mounted under
+/assets/ so the browser can still fetch them.
 
 Endpoints
     GET  /api/characters          read characters.json
@@ -19,6 +30,7 @@ Endpoints
 """
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -43,14 +55,14 @@ LOOPBACK = "127.0.0.1"
 ALL_INTERFACES = "0.0.0.0"
 
 
-def read_lan_setting(panel_dir):
+def read_lan_setting(config_dir):
     """Whether the user opted into serving the whole network.
 
     Defaults to loopback: the panel edits characters, uploads files and
     proxies LLM calls with stored API keys, none of which should become
     reachable by accident.
     """
-    path = os.path.join(panel_dir, "settings.json")
+    path = os.path.join(config_dir, "settings.json")
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
@@ -92,18 +104,27 @@ class PanelError(Exception):
 
 
 class Paths:
-    """Resolved once at startup so handlers never build paths from input."""
+    """Resolved once at startup so handlers never build paths from input.
 
-    def __init__(self, panel_dir):
-        self.panel = os.path.abspath(panel_dir)
-        self.root = os.path.dirname(self.panel)
-        self.characters = os.path.join(self.panel, "characters.json")
-        self.providers = os.path.join(self.panel, "providers.json")
-        self.settings = os.path.join(self.panel, "settings.json")
-        self.voices = os.path.join(self.root, "voices")
-        self.bin = os.path.join(self.root, "bin")
-        self.recordings = os.path.join(self.root, "recordings")
-        self.transcribe = os.path.join(self.panel, "transcribe.py")
+    The layout separates things by what an update does to them: web/ and
+    server/ are replaced wholesale, config/ and assets/ must survive
+    untouched, and var/ can be deleted at any time. Keeping the user's
+    characters and their VRM models inside the served code directory - which
+    is where they used to live - meant an update would take them with it.
+    """
+
+    def __init__(self, root):
+        self.root = os.path.abspath(root)
+        self.web = os.path.join(self.root, "web")
+        self.config = os.path.join(self.root, "config")
+        self.assets = os.path.join(self.root, "assets")
+        self.characters = os.path.join(self.config, "characters.json")
+        self.providers = os.path.join(self.config, "providers.json")
+        self.settings = os.path.join(self.config, "settings.json")
+        self.voices = os.path.join(self.assets, "voices")
+        self.bin = os.path.join(self.root, "runtime", "bin")
+        self.recordings = os.path.join(self.root, "var", "recordings")
+        self.transcribe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcribe.py")
         if not os.path.isdir(self.voices):
             os.makedirs(self.voices)
 
@@ -535,13 +556,16 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         wrong, and the failure only shows up as a blank stage later.
         Directories are reported too so the dialog can say where to put files.
         """
-        panel = PATHS.panel
+        assets = PATHS.assets
 
+        # Reported relative to the project root, so what comes back is exactly
+        # the URL the page fetches ("assets/models/x.vrm") and exactly what is
+        # stored in characters.json. One string, no translation step.
         def relative(path):
-            return os.path.relpath(path, panel).replace("\\", "/")
+            return "assets/" + os.path.relpath(path, assets).replace("\\", "/")
 
         def scan(subdir, suffixes):
-            root = os.path.join(panel, *subdir.split("/"))
+            root = os.path.join(assets, *subdir.split("/"))
             found = []
             if not os.path.isdir(root):
                 return found
@@ -564,7 +588,7 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         # subfolder holding the files that matter, so the search has to walk
         # down rather than glance at the first level.
         live2d = []
-        l2d_root = os.path.join(panel, "models", "live2d")
+        l2d_root = os.path.join(assets, "models", "live2d")
         if os.path.isdir(l2d_root):
             for name in sorted(os.listdir(l2d_root)):
                 folder = os.path.join(l2d_root, name)
@@ -590,14 +614,14 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                     )
 
         return {
-            "vrm": {"dir": "panel\models\\", "items": scan("models", (".vrm",))},
+            "vrm": {"dir": "assets\models\\", "items": scan("models", (".vrm",))},
             "motion": {
-                "dir": "panel\models\motions\\",
+                "dir": "assets\models\motions\\",
                 "items": scan("models/motions", (".vrma",)),
             },
-            "live2d": {"dir": "panel\models\live2d\<model>\\", "items": live2d},
+            "live2d": {"dir": "assets\models\live2d\<model>\\", "items": live2d},
             "video": {
-                "dir": "panel\media\\",
+                "dir": "assets\media\\",
                 "items": scan("media", (".mp4", ".webm", ".mov", ".mkv")),
             },
         }
@@ -756,11 +780,11 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         payload = json.loads(self._read_body().decode("utf-8"))
         video = payload.get("video_path", "")
         if video and not os.path.isabs(video):
-            resolved = os.path.abspath(os.path.join(PATHS.panel, video))
-            # Keep the lookup inside the panel folder: the path comes from the
+            resolved = os.path.abspath(os.path.join(PATHS.root, video))
+            # Keep the lookup inside the assets folder: the path comes from the
             # browser and would otherwise reach anywhere on disk.
-            if not resolved.startswith(PATHS.panel + os.sep):
-                raise PanelError(400, "video_path must stay inside the panel directory")
+            if not resolved.startswith(PATHS.assets + os.sep):
+                raise PanelError(400, "video_path must stay inside the assets directory")
             if not os.path.exists(resolved):
                 raise PanelError(404, "no such video: " + video)
             payload["video_path"] = resolved.replace("\\", "/")
@@ -865,6 +889,37 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     # ---------- static ----------
 
+    # The browser reaches two directories: the app itself in web/, and the
+    # user's avatar files in assets/. They are separate because an update
+    # replaces one and must not touch the other, but the page still has to be
+    # able to fetch a VRM over HTTP - hence a second mount rather than keeping
+    # the models inside the served code.
+    #
+    # Only the two subdirectories the page actually loads from are exposed.
+    # assets/ also holds the voice samples, which have their own endpoint and
+    # no reason to be browsable, especially with LAN access turned on.
+    ASSET_MOUNTS = ("models", "media")
+
+    def translate_path(self, path):
+        clean = urllib.parse.urlparse(path).path
+        prefix = "/assets/"
+        if clean.startswith(prefix):
+            rest = clean[len(prefix):]
+            head = rest.split("/", 1)[0]
+            if head in self.ASSET_MOUNTS:
+                # Resolve through the base implementation against assets/, so
+                # its traversal handling still applies rather than being
+                # reimplemented here.
+                saved = self.directory
+                try:
+                    self.directory = PATHS.assets
+                    return super().translate_path("/" + rest)
+                finally:
+                    self.directory = saved
+            # Anything else under /assets/ is not served at all.
+            return os.path.join(PATHS.assets, "__denied__")
+        return super().translate_path(path)
+
     def guess_type(self, path):
         _, ext = os.path.splitext(path)
         override = EXTRA_TYPES.get(ext.lower())
@@ -905,22 +960,27 @@ def main():
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument(
         "--root",
-        default=os.path.dirname(os.path.abspath(__file__)),
-        help="Directory to serve. Defaults to the panel directory.",
+        default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        help="Project root holding web/, config/ and assets/.",
     )
     args = parser.parse_args()
 
     PATHS = Paths(args.root)
     STORE = llm_router.ProviderStore(PATHS.providers)
-    os.chdir(PATHS.panel)
 
     host = args.host
     if host is None:
-        host = ALL_INTERFACES if read_lan_setting(PATHS.panel) else LOOPBACK
+        host = ALL_INTERFACES if read_lan_setting(PATHS.config) else LOOPBACK
 
-    with ReusableTCPServer((host, args.port), PanelRequestHandler) as httpd:
-        print("Panel serving %s" % PATHS.panel)
-        print("Voices in     %s" % PATHS.voices)
+    # The document root is fixed rather than taken from the process working
+    # directory, so where the server was launched from cannot change what it
+    # serves.
+    handler = functools.partial(PanelRequestHandler, directory=PATHS.web)
+
+    with ReusableTCPServer((host, args.port), handler) as httpd:
+        print("Panel serving %s" % PATHS.web)
+        print("Assets from   %s" % PATHS.assets)
+        print("Config in     %s" % PATHS.config)
         if host == ALL_INTERFACES:
             print("Reachable from the local network on port %d." % args.port)
             print("Anyone who can reach it can edit characters and use your API keys.")

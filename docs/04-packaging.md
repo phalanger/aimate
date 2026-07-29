@@ -104,35 +104,39 @@ asset 协议。**
 代码本身（壳 + 前端 + 服务端）大约 10 MB，其余全是运行时和权重，首次启动时按用户
 选的档位下载。
 
-## 三、目录调整
+## 三、目录调整（已完成）
 
-现在最要命的一点：**用户数据和代码混在一起**。
+原先最要命的一点：**用户数据和代码混在一起**。
 
 `panel\characters.json`、`settings.json`、`llm.json`（存着 API key）就躺在
 `panel\js\` 旁边，`panel\models\` 和 `panel\media\` 里是用户自己放的 VRM、立绘和
 视频。**更新程序 = 覆盖 panel 目录 = 角色、设置、素材全丢。**
 
-这个问题现在就存在，和打不打包无关。
+这个问题和打不打包无关，现在就存在，所以先修了。新布局按"更新时怎么处理"分层，
+完整结构见 [02-design.md 第三节](./02-design.md)：
 
-按"更新时怎么处理"来分层：
+| 层 | 目录 | 更新时 |
+| --- | --- | --- |
+| 代码 | `web\` `server\` `services\` `scripts\` | 整个替换 |
+| 用户数据 | `config\` `assets\` | **绝不能碰** |
+| 运行时 | `runtime\` | 单独下载 |
+| 产物 | `var\` | 随时可删 |
 
-```text
-mate/
-├─ web/          前端（html/css/js/worklets/vendor）   更新时整个替换
-├─ server/       面板服务端（server.py 等）            更新时整个替换
-├─ services/     lipsync 等自研服务                    更新时整个替换
-├─ supervisor/   进程表和 supervisor.py                更新时整个替换
-├─ config/       角色、设置、供应商、API key           ← 绝不能碰
-├─ assets/       VRM、立绘、视频、音色                  ← 绝不能碰
-├─ runtime/      python 环境、ffmpeg、模型权重          ← 单独下载
-├─ var/          logs、recordings、cache                ← 随便删
-├─ spike/        验证用的一次性程序
-└─ docs/
-```
+配套改了这些：
 
-配套要改的：
+1. `server.py` 以 `web\` 为文档根，`assets\models` 和 `assets\media` 挂到
+   `/assets/` 路径下。原先是靠把素材放进被服务的目录里才能被浏览器取到，这正是
+   数据和代码混在一起的根源。
+2. **只挂载这两个子目录**，不是整个 `assets\`。里面还有参考音频，它有自己的接口，
+   没有理由可以被浏览目录——开了局域网访问时尤其如此。
+3. `characters.json` 里的素材路径迁移了一次（`models/x.vrm` →
+   `assets/models/x.vrm`），扫描接口返回的也是同一个字符串，即页面直接可用的 URL，
+   中间没有翻译层。
+4. MuseTalk 的形象缓存从 `musetalk_service\cache\` 挪到 `var\cache-lipsync\`：
+   它是派生数据，重建很贵但重建得出来，属于可以安全删除的那一层。
 
-1. `server.py` 把 `web\` 作为文档根，把 `assets\` 挂到 `/assets/` 路径下（现在是
-   靠把素材放进被服务的目录里才能被浏览器取到）。
-2. `characters.json` 里的路径迁移一次：`models/x.vrm` → `assets/models/x.vrm`。
-3. `services.json`、启动脚本、文档里的路径同步更新。
+### 打包时的更新策略
+
+分层之后升级就是一句话：**替换代码那四个目录，其余原样保留。**
+
+`config\llm.json` 存着 API key，不入库也不该进安装包。首次运行时由用户在界面里填。

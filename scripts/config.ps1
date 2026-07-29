@@ -17,13 +17,13 @@ $Global:LlmModel = "mate-qwen3-14b"
 
 # Realtime voice server. The browser panel connects to
 # ws://127.0.0.1:8765/v1/realtime
-# Bind address follows the lan_access setting in panel\settings.json, so the
+# Bind address follows the lan_access setting in config\settings.json, so the
 # three services agree. If the panel were reachable from the network but the
 # voice server was not, the page would load on another device and then fail to
 # connect with nothing obvious to point at.
 $Global:LanAccess = $false
 try {
-    $settingsPath = Join-Path $Global:MateRoot "panel\settings.json"
+    $settingsPath = Join-Path $Global:MateRoot "config\settings.json"
     if (Test-Path $settingsPath) {
         $settings = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
         foreach ($group in $settings.groups) {
@@ -52,12 +52,13 @@ $Global:PanelHost = $Global:BindHost
 $Global:PanelPort = 8900
 $Global:LlmProxyUrl = "http://127.0.0.1:8900/v1"
 
-# Models and assets.
-$Global:TtsModel = Join-Path $Global:MateRoot "models\qwen3-tts-base"
-$Global:RefAudio = Join-Path $Global:MateRoot "voices\default.wav"
-$Global:LogDir = Join-Path $Global:MateRoot "logs"
+# Models and assets. The live values for the services come from
+# scripts\services.json; these remain for check-llm.ps1 and manual use.
+$Global:TtsModel = Join-Path $Global:MateRoot "runtime\models\qwen3-tts-base"
+$Global:RefAudio = Join-Path $Global:MateRoot "assets\voices\default.wav"
+$Global:LogDir = Join-Path $Global:MateRoot "var\logs"
 
-# Transcript of voices\default.wav. Qwen3-TTS clones from the pair of
+# Transcript of assets\voices\default.wav. Qwen3-TTS clones from the pair of
 # reference audio plus its transcript, so this has to match the wav file.
 # Replace both together when you swap in your own voice.
 $Global:RefText = "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes."

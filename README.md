@@ -23,14 +23,20 @@ I:\ai\code\mate\scripts\start-all.ps1
 
 ## 目录
 
-| 路径 | 内容 |
-| --- | --- |
-| `docs/` | 分析、设计、用户指南 |
-| `panel/` | 浏览器前端（3D 渲染、音频、角色配置） |
-| `panel/vendor/` | 本地化的 three.js 与 three-vrm，不走 CDN |
-| `models/` | Qwen3-TTS 权重与 LLM GGUF |
-| `voices/` | 音色克隆用的参考音频 |
-| `scripts/` | 启动脚本 |
+按「更新时该怎么处理它」分层：
+
+| 路径 | 内容 | 更新时 |
+| --- | --- | --- |
+| `web/` | 浏览器前端（渲染、音频、字幕、录制） | 整个替换 |
+| `server/` | 面板服务端：静态服务、配置 API、LLM 代理 | 整个替换 |
+| `services/lipsync/` | MuseTalk 口型服务（独立 conda 环境） | 整个替换 |
+| `scripts/` | supervisor 与进程表 `services.json` | 整个替换 |
+| `config/` | 角色、设置、供应商、API key | **绝不能碰** |
+| `assets/` | VRM、Live2D、动作、视频、参考音频 | **绝不能碰** |
+| `runtime/` | 模型权重、MuseTalk 仓库、ffmpeg | 单独下载 |
+| `var/` | 日志、录像、形象缓存 | 随时可删 |
+| `docs/` | 分析、设计、用户指南、打包 | |
+| `spike/` | 一次性验证程序（如 WebView2 麦克风探针） | |
 
 ## 文档
 
@@ -39,6 +45,7 @@ I:\ai\code\mate\scripts\start-all.ps1
 | [01-analysis.md](docs/01-analysis.md) | 事实核查：参考文章的方案为何已过时，硬件预算核算 |
 | [02-design.md](docs/02-design.md) | 组件选型、架构、热切换设计 |
 | [03-user-guide.md](docs/03-user-guide.md) | 使用、换角色、换音色、换模型、排错表 |
+| [04-packaging.md](docs/04-packaging.md) | 桌面程序打包：WebView2 麦克风验证、体积实测、目录分层 |
 
 ## 本机环境的六个坑
 
