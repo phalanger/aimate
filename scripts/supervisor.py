@@ -268,10 +268,23 @@ def probe(check, timeout=1.5):
     if kind == "tcp":
         port = int(check["port"])
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=timeout):
-                return True
+            connection = socket.create_connection(("127.0.0.1", port), timeout=timeout)
         except OSError:
             return False
+        # Close it politely, and give the server a moment to finish accepting
+        # first. Dropping a connection the server has not accepted yet fails
+        # its pending AcceptEx with WinError 64, and asyncio's proactor
+        # responds to an accept error by closing the *listening* socket - so
+        # one badly timed probe silently takes the service off its port for
+        # good, and every later probe then times out against a process that
+        # looks alive. This cost a startup that hung at "starting" forever.
+        try:
+            connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        time.sleep(0.05)
+        connection.close()
+        return True
     if kind == "http":
         try:
             request = urllib.request.Request(check["url"], method="GET")

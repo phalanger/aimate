@@ -492,6 +492,22 @@ def main():
     print("models ready on %s" % STATE.device)
     restore_cached_avatars(STATE)
 
+    warm = getattr(backend(STATE), "warm_up", None)
+    if warm is not None and STATE.avatars:
+        # Any prepared avatar will do: the kernels compiled depend on the
+        # shapes, which are fixed, not on whose face it is.
+        first = STATE.avatars[sorted(STATE.avatars)[0]]
+        print("warming up on '%s' ..." % first.avatar_id)
+        started = time.time()
+        try:
+            warm(STATE, first)
+            print("warm up done in %.1fs" % (time.time() - started))
+        except Exception:
+            # A failed warm up is not a failed service - it only means the
+            # first reply pays the compile instead.
+            traceback.print_exc()
+            print("warm up failed; the first reply will be slow")
+
     import uvicorn
 
     uvicorn.run(build_app(STATE), host=args.host, port=args.port, log_level="warning")

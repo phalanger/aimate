@@ -80,6 +80,24 @@ def load_models(state):
     state.ready = True
 
 
+def warm_up(state, avatar):
+    """Build the compiled kernels now instead of during the first reply.
+
+    torch.compile does not run at load time - it runs on the first generation,
+    which without this is the first thing the user says. That cost 254 s the
+    very first time and around 27 s per fresh process afterwards, all of it
+    with her sitting there not answering. Paying it during startup instead adds
+    the same time to a service that is optional and starts in parallel, so it
+    delays nothing the user is waiting on.
+    """
+    silence = np.zeros(int(AUDIO_SAMPLE_RATE), dtype=np.int16)
+    avatar.begin_turn()
+    avatar.frames_for_audio(silence)
+    # Leave no motion state behind: the next real turn must open on the pose
+    # the idle clip is showing, not on wherever the silence ended up.
+    avatar.begin_turn()
+
+
 def face_detector():
     global _FACE_DETECTOR
     if _FACE_DETECTOR is None:

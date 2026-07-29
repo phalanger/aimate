@@ -75,7 +75,8 @@
         "type": "http",
         "url": "http://127.0.0.1:{lipsync_port}/health"
       },
-      "ready_timeout": 120
+      "note_timeout": "加载约 13 秒，之后还要预热 torch.compile：有编译缓存时约 27 秒，缓存是冷的（换了显卡驱动或 torch 版本）第一次要四分钟。宁可等也不要让第一句话卡住，所以给得宽。",
+      "ready_timeout": 420
     },
     {
       "id": "voice",
