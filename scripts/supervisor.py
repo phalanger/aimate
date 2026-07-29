@@ -104,7 +104,7 @@ def paint(text, colour):
 
 
 class Service:
-    def __init__(self, spec, variables, colour):
+    def __init__(self, spec, variables, colour, common_env=None):
         self.id = spec["id"]
         self.label = spec.get("label", self.id)
         self.note = spec.get("note", "")
@@ -127,7 +127,10 @@ class Service:
         self.command = [expand(part, variables) for part in spec.get("command", [])]
         self.cwd = expand(spec.get("cwd", "{root}"), variables)
         self.env = {}
-        for key, value in (spec.get("env") or {}).items():
+        # Common first so a service can override any of it.
+        merged = dict(common_env or {})
+        merged.update(spec.get("env") or {})
+        for key, value in merged.items():
             # {PATH} and friends expand from the real environment, so a service
             # can prepend to a variable instead of replacing it.
             self.env[key] = expand(value, variables, os.environ)
@@ -249,7 +252,9 @@ def load_services():
 
     services = []
     for index, spec in enumerate(config.get("services", [])):
-        services.append(Service(spec, variables, COLORS[index % len(COLORS)]))
+        services.append(
+            Service(spec, variables, COLORS[index % len(COLORS)], config.get("common_env"))
+        )
     return services, variables
 
 

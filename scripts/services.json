@@ -2,6 +2,15 @@
   "_comment": "进程表。supervisor.py 按这里的定义启动、探活、重启所有服务，是唯一的事实来源——start-*.ps1 现在只是 supervisor 的薄封装，不再各自持有一份启动参数。",
   "_vars": "命令行和环境变量里的 {name} 会被 vars 替换。{root} 是项目根目录，{bind} 由 config\\settings.json 的 lan_access 决定。",
   "_ready": "ready 是探活方式：tcp 探端口，http 探接口，none 表示启动即算就绪。supervisor 等到就绪才启动依赖它的服务。",
+  "_common_env": "加在每个受管服务上的环境变量，服务自己的 env 会覆盖同名项。代理放这里而不是只给面板：语音流水线启动时 torch.hub 会去 GitHub 取 silero-vad、nltk 也会联网检查，拿不到代理就会一直挂在那里连不上——表现为语音服务永远启动不完。NO_PROXY 保证本机之间的调用不绕代理。留空时这些变量不会被设置，沿用启动环境里已有的。",
+  "common_env": {
+    "HTTP_PROXY": "{proxy}",
+    "HTTPS_PROXY": "{proxy}",
+    "http_proxy": "{proxy}",
+    "https_proxy": "{proxy}",
+    "NO_PROXY": "{no_proxy}",
+    "no_proxy": "{no_proxy}"
+  },
   "vars": {
     "python_s2s": "D:\\Apps\\anaconda3\\envs\\s2s\\python.exe",
     "python_musetalk": "D:\\Apps\\anaconda3\\envs\\musetalk\\python.exe",
@@ -28,15 +37,6 @@
         "{panel_port}"
       ],
       "cwd": "{root}",
-      "_env_proxy": "只有面板会访问公网（调用云端大模型）。代理地址来自设置里的「云端模型的代理」；留空时这几个变量不会被设置，沿用启动环境里已有的。NO_PROXY 保证本机之间的调用（口型服务、Ollama、面板自己）不绕代理。",
-      "env": {
-        "HTTP_PROXY": "{proxy}",
-        "HTTPS_PROXY": "{proxy}",
-        "http_proxy": "{proxy}",
-        "https_proxy": "{proxy}",
-        "NO_PROXY": "{no_proxy}",
-        "no_proxy": "{no_proxy}"
-      },
       "ready": {
         "type": "tcp",
         "port": "{panel_port}"
