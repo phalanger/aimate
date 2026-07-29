@@ -115,8 +115,30 @@ class Avatar:
             for p in (self.latents_path, self.coords_path, self.mask_coords_path, self.info_path)
         )
 
+    def _cache_matches_source(self):
+        """Whether the cache on disk was built from the video now being asked for.
+
+        Reusing a cache across restarts is the point of having one. Reusing it
+        when the source video has changed is a trap: preparing a new clip under
+        an avatar id that already exists would silently keep the old frames and
+        still report success, and the only symptom is that nothing looks
+        different.
+        """
+        try:
+            with open(self.info_path, "r", encoding="utf-8") as handle:
+                info = json.load(handle)
+        except Exception:
+            return False
+
+        def same(a, b):
+            return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+        return same(info.get("video_path", ""), self.video_path) and info.get(
+            "bbox_shift", 0
+        ) == self.bbox_shift
+
     def prepare(self, force=False):
-        if self.is_cached() and not force:
+        if self.is_cached() and not force and self._cache_matches_source():
             self.load()
             return
 
