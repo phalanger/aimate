@@ -1,0 +1,112 @@
+{
+  "_comment": "进程表。supervisor.py 按这里的定义启动、探活、重启所有服务，是唯一的事实来源——start-*.ps1 现在只是 supervisor 的薄封装，不再各自持有一份启动参数。",
+  "_vars": "命令行和环境变量里的 {name} 会被 vars 替换。{root} 是项目根目录，{bind} 由 panel\\settings.json 的 lan_access 决定。",
+  "_ready": "ready 是探活方式：tcp 探端口，http 探接口，none 表示启动即算就绪。supervisor 等到就绪才启动依赖它的服务。",
+  "vars": {
+    "python_s2s": "D:\\Apps\\anaconda3\\envs\\s2s\\python.exe",
+    "python_musetalk": "D:\\Apps\\anaconda3\\envs\\musetalk\\python.exe",
+    "ollama_host": "127.0.0.1:11700",
+    "panel_port": "8900",
+    "voice_port": "8765",
+    "lipsync_port": "8930",
+    "tts_model": "{root}\\models\\qwen3-tts-base",
+    "ref_audio": "{root}\\voices\\default.wav",
+    "ref_text": "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes.",
+    "no_proxy": "127.0.0.1,localhost,::1"
+  },
+  "services": [
+    {
+      "id": "panel",
+      "label": "面板服务器",
+      "note": "既服务界面，也代理语音流水线的 LLM 调用，所以必须最先起来。",
+      "command": [
+        "{python_s2s}",
+        "{root}\\panel\\server.py",
+        "--host",
+        "{bind}",
+        "--port",
+        "{panel_port}"
+      ],
+      "cwd": "{root}\\panel",
+      "ready": { "type": "tcp", "port": "{panel_port}" },
+      "ready_timeout": 30
+    },
+    {
+      "id": "ollama",
+      "label": "本地大模型（Ollama）",
+      "note": "外部程序，由它自己的托盘管理。这里只探活不接管——它必须从自己的安装目录启动，否则会加载到冲突的 ggml 库。选了云端供应商时它不在线也没关系。",
+      "managed": false,
+      "optional": true,
+      "ready": { "type": "http", "url": "http://{ollama_host}/api/tags" },
+      "ready_timeout": 5
+    },
+    {
+      "id": "lipsync",
+      "label": "口型服务（MuseTalk）",
+      "note": "只有显示方式为「真人口型」的角色才用得上。自己一个 conda 环境：它要 torch 2.0.1+cu118，语音流水线要 torch 2.9.1+cu128。",
+      "optional": true,
+      "command": ["{python_musetalk}", "{root}\\musetalk_service\\service.py"],
+      "cwd": "{root}",
+      "env": { "PATH": "{root}\\bin;{PATH}" },
+      "ready": { "type": "http", "url": "http://127.0.0.1:{lipsync_port}/health" },
+      "ready_timeout": 120
+    },
+    {
+      "id": "voice",
+      "label": "语音流水线",
+      "note": "VAD、识别、合成都在这一个进程里，不是三个服务。首次启动要下载 Whisper large-v3-turbo，约 1.6 GB。",
+      "depends_on": ["panel"],
+      "command": [
+        "{python_s2s}",
+        "-m",
+        "speech_to_speech.s2s_pipeline",
+        "--mode",
+        "realtime",
+        "--ws_host",
+        "{bind}",
+        "--ws_port",
+        "{voice_port}",
+        "--stt",
+        "whisper",
+        "--stt_model_name",
+        "openai/whisper-large-v3-turbo",
+        "--language",
+        "zh",
+        "--llm_backend",
+        "chat-completions",
+        "--model_name",
+        "from-panel",
+        "--responses_api_base_url",
+        "http://127.0.0.1:{panel_port}/v1",
+        "--responses_api_api_key",
+        "local",
+        "--responses_api_stream",
+        "--stream_batch_sentences",
+        "1",
+        "--tts",
+        "qwen3",
+        "--qwen3_tts_backend",
+        "torch",
+        "--qwen3_tts_model_name",
+        "{tts_model}",
+        "--qwen3_tts_device",
+        "cuda",
+        "--qwen3_tts_ref_audio",
+        "{ref_audio}",
+        "--qwen3_tts_ref_text",
+        "{ref_text}",
+        "--qwen3_tts_xvec_only",
+        "--thresh",
+        "0.4"
+      ],
+      "cwd": "{root}",
+      "env": {
+        "HF_HUB_ENABLE_HF_TRANSFER": "0",
+        "NO_PROXY": "{no_proxy}",
+        "no_proxy": "{no_proxy}"
+      },
+      "ready": { "type": "tcp", "port": "{voice_port}" },
+      "ready_timeout": 900
+    }
+  ]
+}

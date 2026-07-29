@@ -11,16 +11,38 @@ API Key，对话内容不出本机。
 I:\ai\code\mate\scripts\start-all.ps1
 ```
 
-看到 `OpenAI Realtime API starting on ws://127.0.0.1:8765/v1/realtime` 之后，
-浏览器打开：
-
-```text
-http://127.0.0.1:8900/
-```
+一个窗口、一份合并日志，看到 `Open http://127.0.0.1:8900/` 就可以开了。
+**Ctrl+C 会把所有服务一起停掉**，包括子进程。
 
 点「开始对话」，允许麦克风权限，就可以直接说话了。
 
 首次启动会自动下载 Whisper large-v3-turbo（约 1.6 GB），需要等几分钟。
+
+### supervisor
+
+启动由 `scripts\supervisor.py` 统一管理，进程表在 `scripts\services.json` 里——
+那是唯一的事实来源，`start-*.ps1` 现在都只是它的薄封装，不再各自持有一份启动参数。
+
+它做这几件事：
+
+- 按依赖顺序启动（语音流水线要等面板起来，因为它启动时会做一次预热的 LLM 调用）
+- **探活而不是 sleep**：探到端口/接口真的响应了才继续
+- 日志按服务加前缀、上色，合并到一个窗口，同时分别落到 `logs\<服务>.log`
+- 崩溃自动重启，退避 2/5/15 秒，两分钟内超过三次就放弃并告诉你去看哪个日志
+- 端口已经被占用时**接管而不是报错**——面板已经在跑就不重复启动
+- Ctrl+C 按依赖倒序停止，用 `taskkill /T` 连孙进程一起收掉（torch 会起 worker，
+  漏掉的话下次启动会撞上「端口被占用」）
+
+常用参数：
+
+```powershell
+scripts\start-all.ps1 --list          # 只看进程表，不启动
+scripts\start-all.ps1 --skip lipsync  # 不要口型服务
+scripts\start-all.ps1 --no-restart    # 崩了就崩了，方便看现场
+scripts\start-panel.ps1               # 等价于 --only panel
+```
+
+`--only` 会自动把依赖捎上：`--only voice` 实际启动的是 panel + voice。
 
 ## 二、系统组成
 
@@ -36,13 +58,18 @@ http://127.0.0.1:8900/
 前端是浏览器里的 three.js + three-vrm，渲染 VRM 3D 角色，用实际播放的音频包络
 驱动口型。
 
-三个进程与端口：
+**注意 VAD、STT、TTS 是同一个进程里的三个线程，不是三个服务。**下面这张表才是
+实际在跑的进程：
 
-| 进程 | 端口 | 脚本 |
-| --- | --- | --- |
-| Ollama（LLM） | 11700 | `scripts\check-llm.ps1`（只检查，不启动） |
-| speech-to-speech（语音流水线） | 8765 | `scripts\start-voice.ps1` |
-| 面板静态服务器 | 8900 | `scripts\start-panel.ps1` |
+| 进程 | 端口 | 谁管 | 为什么单独一个进程 |
+| --- | --- | --- | --- |
+| 面板服务器 | 8900 | supervisor | 界面是网页，总得有东西可连 |
+| speech-to-speech | 8765 | supervisor | 同上（四层流水线都在它里面） |
+| MuseTalk 口型 | 8930 | supervisor（可选） | torch 2.0.1+cu118 vs 2.9.1+cu128，连 Python 版本都不同，没法共用解释器 |
+| Ollama | 11700 | **它自己的托盘** | 外部程序；supervisor 只探活不接管 |
+
+Ollama 不由 supervisor 启动是有原因的：它必须从自己的安装目录启动，从本项目目录
+启动会让它加载到冲突的 ggml 库并崩溃。
 
 Ollama 用 11700 而不是默认的 11434，因为本机 11428–11527 落在 Windows 保留端口
 区间里，用默认端口会报 `socket access forbidden`。`OLLAMA_HOST` 已持久化为用户

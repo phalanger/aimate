@@ -1,18 +1,13 @@
-# Serves the 3D panel over HTTP.
+# Starts only the panel server, through the supervisor.
 #
-# Opening panel\index.html directly will not work: ES modules, fetch() and
-# AudioWorklet.addModule all fail under the file:// origin, and getUserMedia
-# needs a secure context. http://127.0.0.1 satisfies both.
+# Useful when the voice pipeline is already running and only the panel needs a
+# restart: editing panel code should not cost a reload of Whisper and the TTS.
+#
+# Opening panel\index.html directly will not work in any case. ES modules,
+# fetch() and AudioWorklet.addModule all fail under the file:// origin, and
+# getUserMedia needs a secure context. http://127.0.0.1 satisfies both.
 
 . "$PSScriptRoot\config.ps1"
 
-$panelDir = Join-Path $Global:MateRoot "panel"
-
-Write-Host "Panel: http://$Global:PanelHost`:$Global:PanelPort/"
-Write-Host ""
-
-# Stdlib-only, so the base interpreter works just as well as the s2s env.
-& $Global:MatePython (Join-Path $panelDir "server.py") `
-    --host $Global:PanelHost `
-    --port $Global:PanelPort `
-    --root $panelDir
+& $Global:MatePython "$PSScriptRoot\supervisor.py" --only panel @args
+exit $LASTEXITCODE
