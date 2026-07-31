@@ -40,6 +40,10 @@ const IDLE_REPORTS_TO_END = 20;
 // noticing, and the service answers in milliseconds when it is healthy.
 const CONNECT_TIMEOUT_MS = 8000;
 
+// Faults the service names itself, mapped to something the user can act on.
+// An unmapped code falls through to the raw message, which is at least true.
+const ERROR_KEYS = { unknown_avatar: "err_mt_unprepared" };
+
 function base64ToBytes(base64) {
   const binary = atob(base64);
   const out = new Uint8Array(binary.length);
@@ -86,6 +90,10 @@ export class MuseTalkStage {
     // different display mode reports "service unreachable" - the act of
     // leaving raises the error.
     this.disposed = false;
+    // Whether the reason for this socket ending has already been reported.
+    // The service states its faults and then closes, so the close arrives
+    // moments after the explanation - and used to overwrite it with a guess.
+    this.explained = false;
     this.cycle = 0;
     this.fps = 25;
 
@@ -142,6 +150,7 @@ export class MuseTalkStage {
   _connect() {
     return new Promise((resolve) => {
       const url = SERVICE_WS + "?avatar=" + encodeURIComponent(this.config.avatar_id);
+      this.explained = false;
       const socket = new WebSocket(url);
       socket.binaryType = "arraybuffer";
       this.socket = socket;
@@ -165,6 +174,7 @@ export class MuseTalkStage {
       // with nothing anywhere to say why.
       const fail = (reason) => {
         this.ready = false;
+        this.explained = true;
         this._report(reason);
         settle();
       };
@@ -189,7 +199,9 @@ export class MuseTalkStage {
         }
       };
       socket.onclose = () => {
-        if (this.disposed) {
+        // Already explained - by the service, or by the timeout that gave up
+        // on it. Either is more specific than anything a close can add.
+        if (this.disposed || this.explained) {
           settle();
           return;
         }
@@ -236,7 +248,8 @@ export class MuseTalkStage {
       this._maybeStart();
     } else if (event.type === "error") {
       this.ready = false;
-      this._report(event.message || "service_error");
+      this.explained = true;
+      this._report(ERROR_KEYS[event.code] || event.message || "service_error");
     }
   }
 

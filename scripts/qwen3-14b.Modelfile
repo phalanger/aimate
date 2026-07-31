@@ -1,0 +1,22 @@
+# Optional. Not used by install.ps1 - the language model is your choice.
+#
+# `ollama pull qwen3:14b` is enough on its own: the published model already
+# carries a correct chat template. This recipe only retunes it for voice, and
+# is here because the two settings below were arrived at the hard way.
+#
+#     ollama create mate-qwen3-14b -f scripts\qwen3-14b.Modelfile
+#
+# Then pick "mate-qwen3-14b" in Settings -> Model.
+FROM qwen3:14b
+
+# Qwen3's recommended sampling for non-thinking mode.
+PARAMETER temperature 0.7
+PARAMETER top_p 0.8
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1.05
+
+# Voice chat needs short turns. A long reply means the synthesiser monologues
+# for half a minute while you cannot get a word in. The character prompts ask
+# for two sentences; this enforces it even when the model ignores them.
+PARAMETER num_predict 100
+PARAMETER num_ctx 4096

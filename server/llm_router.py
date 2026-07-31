@@ -9,6 +9,11 @@ than a restart that would reload Whisper and the TTS model.
 All five supported providers speak the OpenAI chat-completions protocol, so
 this only rewrites the target URL, the credential and the model name - there is
 no protocol translation.
+
+The one thing it does rewrite is reasoning: models that think out loud put the
+whole chain of thought in the reply, and the pipeline hands the reply straight
+to a speech synthesiser. Stripped here rather than in the pipeline because this
+is the single point every provider's output passes through. See ThinkStripper.
 """
 
 import json
@@ -19,6 +24,83 @@ import urllib.request
 CONFIG_NAME = "providers.json"
 REQUEST_TIMEOUT = 300
 MODELS_TIMEOUT = 30
+
+THINK_OPEN = "<think>"
+THINK_CLOSE = "</think>"
+
+
+class ThinkStripper:
+    """Removes <think>...</think> from a reply arriving in pieces.
+
+    Reasoning models mark their working with these tags and leave it in the
+    content. Nothing downstream reads the text: it goes to the TTS, which
+    happily reads a paragraph of deliberation aloud before the actual answer.
+
+    Feeding it in pieces is the whole difficulty. A tag can be split across two
+    streamed deltas - "<th" then "ink>" - so anything that might be the start of
+    a tag has to be held back until the next piece proves it either way. What is
+    held is at most one tag's worth of characters, which is why this can run in
+    the streaming path without adding perceptible latency.
+
+    Providers that report reasoning in a separate field instead (DeepSeek's
+    reasoning_content) need nothing: the pipeline only ever reads content.
+    """
+
+    def __init__(self):
+        self.inside = False
+        self.held = ""
+
+    def feed(self, text):
+        if not text:
+            return ""
+        buffer = self.held + text
+        self.held = ""
+        out = []
+        while buffer:
+            if self.inside:
+                end = buffer.find(THINK_CLOSE)
+                if end == -1:
+                    # Keep only what could still be the start of the closing
+                    # tag; the rest is thinking and is dropped.
+                    self.held = _tag_prefix_suffix(buffer, THINK_CLOSE)
+                    buffer = ""
+                else:
+                    buffer = buffer[end + len(THINK_CLOSE):]
+                    self.inside = False
+                continue
+            start = buffer.find(THINK_OPEN)
+            if start == -1:
+                keep = _tag_prefix_suffix(buffer, THINK_OPEN)
+                if keep:
+                    out.append(buffer[:-len(keep)])
+                    self.held = keep
+                else:
+                    out.append(buffer)
+                buffer = ""
+            else:
+                out.append(buffer[:start])
+                buffer = buffer[start + len(THINK_OPEN):]
+                self.inside = True
+        return "".join(out)
+
+    def flush(self):
+        """Whatever was held back, once no more text is coming.
+
+        An unterminated <think> means the model was cut off mid-thought, and
+        emitting the held fragment would speak half a tag. Inside one, drop it.
+        """
+        held = "" if self.inside else self.held
+        self.held = ""
+        return held
+
+
+def _tag_prefix_suffix(text, tag):
+    """The longest suffix of text that is a proper prefix of tag."""
+    limit = min(len(text), len(tag) - 1)
+    for size in range(limit, 0, -1):
+        if text[-size:] == tag[:size]:
+            return text[-size:]
+    return ""
 
 
 class RouterError(Exception):
@@ -190,8 +272,77 @@ def proxy_chat(store, body, write_status, write_chunk):
     with response:
         content_type = response.headers.get("Content-Type", "application/json")
         write_status(200, content_type)
-        while True:
-            chunk = response.read(4096)
-            if not chunk:
-                break
-            write_chunk(chunk)
+        if "text/event-stream" in content_type:
+            _stream_without_thinking(response, write_chunk)
+        else:
+            _forward_without_thinking(response, write_chunk)
+
+
+def _stream_without_thinking(response, write_chunk):
+    """Pass the event stream through, minus any chain of thought.
+
+    Rewritten event by event rather than buffered: the pipeline starts
+    synthesising on the first complete sentence, so holding the reply until it
+    finished would add its whole generation time to every turn.
+
+    Anything that is not a data event, or not JSON, or shaped differently from
+    what is expected, goes out untouched. A provider doing something unusual
+    should degrade to the old pass-through behaviour, not break.
+    """
+    stripper = ThinkStripper()
+    pending = b""
+    while True:
+        chunk = response.read(4096)
+        if not chunk:
+            break
+        pending += chunk
+        # Events are newline-delimited; hold an incomplete trailing line.
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            write_chunk(_rewrite_event_line(line, stripper) + b"\n")
+    if pending:
+        write_chunk(_rewrite_event_line(pending, stripper))
+    tail = stripper.flush()
+    if tail:
+        write_chunk(_tail_event(tail))
+
+
+def _rewrite_event_line(line, stripper):
+    text = line.decode("utf-8", "replace")
+    if not text.startswith("data:"):
+        return line
+    payload = text[len("data:"):].strip()
+    if not payload or payload == "[DONE]":
+        return line
+    try:
+        event = json.loads(payload)
+        delta = event["choices"][0]["delta"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return line
+    if not isinstance(delta, dict) or not isinstance(delta.get("content"), str):
+        return line
+    delta["content"] = stripper.feed(delta["content"])
+    return ("data: " + json.dumps(event, ensure_ascii=False)).encode("utf-8")
+
+
+def _tail_event(text):
+    """Emit text the stripper was holding when the stream ended."""
+    event = {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+    return ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode("utf-8")
+
+
+def _forward_without_thinking(response, write_chunk):
+    """The non-streaming shape: one JSON object with the whole reply in it."""
+    raw = response.read()
+    try:
+        event = json.loads(raw.decode("utf-8"))
+        message = event["choices"][0]["message"]
+    except (ValueError, KeyError, IndexError, TypeError, UnicodeDecodeError):
+        write_chunk(raw)
+        return
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        write_chunk(raw)
+        return
+    stripper = ThinkStripper()
+    message["content"] = stripper.feed(message["content"]) + stripper.flush()
+    write_chunk(json.dumps(event, ensure_ascii=False).encode("utf-8"))

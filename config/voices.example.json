@@ -1,0 +1,13 @@
+{
+  "_comment": "音色库模板。install.ps1 会把这份拷成 voices.json。每一条是「一段参考音频 + 这段音频的逐字稿」——声音克隆两样都要，而且必须对得上。角色通过 voice_id 指向其中一条。",
+  "_note_pairing": "file 和 ref_text 对不上会出怪事：文本里有而音频没念完的字，会被模型加到每一句回复的开头。面板音色库里的「重新识别」就是修这个的——它重读音频、重写文本，必要时把音频裁到最后一个完整句子。",
+  "_note_path": "file 用相对项目根目录的路径就行，服务都以项目根目录为工作目录。面板里新建的音色会写成绝对路径，那是正常的。",
+  "voices": {
+    "v-default": {
+      "label": "默认样例（英文男声）",
+      "file": "assets/voices/default.wav",
+      "ref_text": "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes.",
+      "created": "2026-07-30"
+    }
+  }
+}

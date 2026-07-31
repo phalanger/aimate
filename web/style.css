@@ -438,6 +438,21 @@ body {
   gap: 10px;
 }
 
+/* Text box folded away: this is a voice conversation, so the two controls
+   shrink to glyphs and stop being the biggest thing over the picture. Sized
+   as circles rather than by padding, so the two come out identical despite
+   .primary and .ghost carrying different padding. */
+.controls[data-compact="true"] .primary,
+.controls[data-compact="true"] .ghost {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  font-size: 15px;
+}
+
 button {
   font: inherit;
   cursor: pointer;

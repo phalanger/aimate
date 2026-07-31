@@ -37,6 +37,25 @@ JPEG_QUALITY = 82
 # only the fallback if it cannot be read.
 TARGET_SIZE = 512
 
+# How much larger the face is allowed to be in the generated frames than it is
+# in the idle clip.
+#
+# Framing the reference to match the clip exactly (1.0) is what stops the
+# picture jumping when she starts talking, but it also decides how many of the
+# model's 512 pixels land on the mouth - and that is what lip detail is made
+# of. Measured on two avatars prepared from equally sharp 1024px stills, where
+# only the clip's framing differed:
+#
+#   idle framed close  (face 0.357 of frame)  ->  205 px face, mouth 205x93
+#   idle framed wide   (face 0.285 of frame)  ->  148 px face, mouth 147x67
+#
+# Half the mouth pixels, from framing alone. The close one had ended up 13.3%
+# tighter than its clip because the crop hit the edge of the still, and that
+# mismatch went unnoticed for days while the softer mouth on the other one was
+# obvious immediately. So a small, deliberate overshoot buys real detail at a
+# cost that does not show: 1.2 puts the wide example at 177 px.
+DEFAULT_FACE_ZOOM = 1.2
+
 # Matches avatar.py so both backends put the same sized picture on the wire.
 STREAM_MAX_HEIGHT = 576
 AUDIO_SAMPLE_RATE = 16000
@@ -107,6 +126,34 @@ def face_detector():
     return _FACE_DETECTOR
 
 
+def _imread(path):
+    """cv2.imread that survives a non-ASCII path.
+
+    OpenCV opens image files through its own C++ IO, which on Windows goes via
+    the ANSI code page - so a path like "assets/media/<chinese>.png" simply
+    fails to open and imread hands back None, as if the file were corrupt.
+    Reading the bytes in Python and decoding them in memory sidesteps the
+    filename entirely. VideoCapture is unaffected because it hands the path to
+    FFmpeg, which is why the idle clip loaded and only the still did not.
+    """
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _imwrite(path, image):
+    """cv2.imwrite counterpart to _imread, for the same reason."""
+    extension = os.path.splitext(path)[1] or ".png"
+    ok, buffer = cv2.imencode(extension, image)
+    if not ok:
+        raise RuntimeError("could not encode image as %s" % extension)
+    buffer.tofile(path)
+
+
 def _face_box(image_bgr):
     """Absolute (x1, y1, x2, y2) of the first face, or None."""
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -132,7 +179,7 @@ def _first_frame_and_count(video_path):
     return frame, count
 
 
-def _aligned_reference(still_bgr, idle_frame_bgr, target):
+def _aligned_reference(still_bgr, idle_frame_bgr, target, face_zoom=DEFAULT_FACE_ZOOM):
     """Re-frame the still so its face sits where the idle clip's face sits.
 
     Between turns the panel loops the real clip; while she speaks it shows
@@ -143,6 +190,10 @@ def _aligned_reference(still_bgr, idle_frame_bgr, target):
 
     The still is deliberately higher resolution than the clip, so this is a
     downscale and costs no detail.
+
+    `face_zoom` deliberately overshoots that match - see DEFAULT_FACE_ZOOM. The
+    position still lines up; only the size runs slightly large, which reads as a
+    gentle push-in rather than as a cut.
     """
     idle_box = _face_box(idle_frame_bgr)
     still_box = _face_box(still_bgr)
@@ -163,9 +214,10 @@ def _aligned_reference(still_bgr, idle_frame_bgr, target):
     still_cx = (sx1 + sx2) / 2.0
     still_cy = (sy1 + sy2) / 2.0
 
-    # A square crop of this side length would put the face at the same fraction.
+    # A square crop of this side length puts the face at face_zoom times the
+    # fraction it occupies in the clip - the same fraction when that is 1.0.
     height, width = still_bgr.shape[:2]
-    ideal = still_face / max(face_fraction, 1e-6)
+    ideal = still_face / max(face_fraction * face_zoom, 1e-6)
 
     # Matching exactly usually needs more picture than the still contains: a
     # face filling more of its frame than the clip's does has to be zoomed out
@@ -189,12 +241,16 @@ def _aligned_reference(still_bgr, idle_frame_bgr, target):
         "still_face_fraction": round(still_face / float(height), 4),
         "crop_side": sidei,
         "scale": round(target / float(sidei), 3),
-        # What the face fraction actually came out as, and how far that is from
-        # the clip's. Anything much above a few percent shows up as a zoom the
-        # moment she starts talking, and the fix is a reference still framed
-        # wider - not something this can paper over.
+        "face_zoom": round(face_zoom, 3),
+        # How much bigger the face ended up than in the clip. Roughly
+        # (face_zoom - 1) x 100 when the crop fits, and more when it hit the
+        # edge of the still and could not be widened any further. Large values
+        # read as a push-in the moment she starts talking; the cure for an
+        # unwanted one is a reference still framed wider, not anything this can
+        # paper over.
         "achieved_face_fraction": round(still_face / float(sidei), 4),
         "framing_error_pct": round(100.0 * (still_face / float(sidei) / face_fraction - 1.0), 1),
+        "face_px": int(round(still_face * target / float(sidei))),
     }
 
 
@@ -221,12 +277,13 @@ class Avatar:
     is used only to work out how the still should be framed.
     """
 
-    def __init__(self, state, avatar_id, video_path, bbox_shift=0, idle_video=""):
+    def __init__(self, state, avatar_id, video_path, bbox_shift=0, idle_video="", face_zoom=None):
         self.state = state
         self.avatar_id = avatar_id
         self.video_path = video_path
         self.bbox_shift = bbox_shift
         self.idle_video = idle_video
+        self.face_zoom = DEFAULT_FACE_ZOOM if face_zoom is None else float(face_zoom)
 
         root = os.path.join(state.args.cache_dir, avatar_id)
         self.root = root
@@ -267,10 +324,15 @@ class Avatar:
                 os.path.normpath(b or "")
             )
 
+        # The framing constant counts as a source: pressing "prepare" after it
+        # changes has to actually rebuild, or the avatar keeps the old crop and
+        # the setting looks like it did nothing.
+        cached_zoom = (info.get("geometry") or {}).get("face_zoom", 1.0)
         return (
             info.get("backend") == "flashhead"
             and same(info.get("video_path", ""), self.video_path)
             and same(info.get("idle_video", ""), self.idle_video)
+            and abs(float(cached_zoom) - self.face_zoom) < 1e-6
         )
 
     def prepare(self, force=False):
@@ -278,14 +340,14 @@ class Avatar:
             self.load()
             return
 
-        still = cv2.imread(self.video_path)
+        still = _imread(self.video_path)
         if still is None:
             raise RuntimeError("could not read reference image: %s" % self.video_path)
 
         target = int(self.state.infer_params.get("height", TARGET_SIZE))
         if self.idle_video and os.path.exists(self.idle_video):
             idle_frame, idle_count = _first_frame_and_count(self.idle_video)
-            reference, geometry = _aligned_reference(still, idle_frame, target)
+            reference, geometry = _aligned_reference(still, idle_frame, target, self.face_zoom)
         else:
             # No clip to match: fall back to the model's own face crop, which
             # frames tightly and gives the face the most pixels.
@@ -294,14 +356,20 @@ class Avatar:
             pil = process_image(self.video_path, face_ratio=2.0, target_size=(target, target))
             reference = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
             idle_count = 0
-            geometry = {"idle_face_fraction": None, "crop_side": None, "scale": None}
+            geometry = {
+                "idle_face_fraction": None,
+                "crop_side": None,
+                "scale": None,
+                # Nothing to align to, so nothing was zoomed relative to it.
+                "face_zoom": 1.0,
+            }
 
         # Build beside the existing cache and swap at the end: a failure part
         # way through must not leave the avatar unusable.
         staging = self.root + ".staging"
         shutil.rmtree(staging, ignore_errors=True)
         os.makedirs(staging, exist_ok=True)
-        cv2.imwrite(os.path.join(staging, "reference.png"), reference)
+        _imwrite(os.path.join(staging, "reference.png"), reference)
         info = {
             "backend": "flashhead",
             "video_path": self.video_path,

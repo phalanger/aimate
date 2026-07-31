@@ -154,16 +154,21 @@ export class VoiceLibrary {
 
       const actions = document.createElement("span");
       actions.className = "voice-actions";
-      for (const [key, handler] of [
-        ["btn_play", () => this._play(pack)],
-        ["btn_rename", () => this._rename(pack)],
-        ["btn_delete", () => this._delete(pack)],
+      // Renaming and deleting still work on a voice whose clip has gone -
+      // deleting it is the likeliest thing the user wants. The two that read
+      // the audio do not.
+      for (const [key, handler, needsClip] of [
+        ["btn_play", () => this._play(pack), true],
+        ["btn_retranscribe", (button) => this._retranscribe(pack, button), true],
+        ["btn_rename", () => this._rename(pack), false],
+        ["btn_delete", () => this._delete(pack), false],
       ]) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "ghost small";
         button.textContent = this.t(key);
-        button.addEventListener("click", handler);
+        button.disabled = needsClip && pack.missing;
+        button.addEventListener("click", () => handler(button));
         actions.appendChild(button);
       }
 
@@ -183,6 +188,40 @@ export class VoiceLibrary {
       "&ts=" +
       Date.now();
     audio.play().catch(() => {});
+  }
+
+  // Re-read the clip and store what it actually says. Slow - Whisper loads
+  // from cold each time - so the button says so and stops taking clicks.
+  //
+  // It can also shorten the clip: a phrase the original cut left unfinished is
+  // dropped from the audio as well as from the text, because a transcript that
+  // does not match its audio is what puts a stray syllable in front of every
+  // reply. Hence the confirmation - the clip changes, not just the text.
+  async _retranscribe(pack, button) {
+    if (!window.confirm(format(this.t("voice_retranscribe_confirm"), { name: pack.label }))) {
+      return;
+    }
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = this.t("transcribing");
+    try {
+      const response = await fetch(
+        "/api/voicepacks/retranscribe?id=" + encodeURIComponent(pack.id),
+        { method: "POST" }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || response.status);
+      }
+      this.packs = data.voices || [];
+      // The list redraws with the new transcript and length; the editor picks
+      // both up when the dialog closes, which is the only time it can see them.
+      this._render();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = label;
+      this._fail(this.t("err_transcribe") + err.message);
+    }
   }
 
   async _rename(pack) {

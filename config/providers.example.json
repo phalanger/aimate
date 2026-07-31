@@ -1,0 +1,62 @@
+{
+  "_comment": "LLM 供应商配置。api_key 明文存在本地，别把这个文件传到任何地方。切换供应商即时生效，不用重启语音服务——speech-to-speech 固定指向面板的代理端点，由代理转发到当前选中的这一家。",
+  "_note_coding_plan": "Kimi 和 GLM 的 Coding Plan 用的是专属端点，和各自按量付费的端点不是同一个地址，别混用。这类订阅通常限定在官方支持的工具里使用，接入前请自行确认是否符合其服务条款。",
+  "active": "grok",
+  "providers": {
+    "ollama": {
+      "label": "Ollama · 本地",
+      "base_url": "http://127.0.0.1:11700/v1",
+      "api_key": "",
+      "model": "mate-qwen3-14b",
+      "needs_key": false,
+      "local": true,
+      "hint": "本地运行，不联网。模型列表从本机 Ollama 读取。"
+    },
+    "kimi": {
+      "label": "Kimi · Coding Plan",
+      "base_url": "https://api.kimi.com/coding/v1",
+      "api_key": "",
+      "model": "",
+      "needs_key": true,
+      "local": false,
+      "hint": "Coding Plan 专属端点。按量付费的 key 请改用 https://api.moonshot.cn/v1"
+    },
+    "glm": {
+      "label": "智谱 GLM · Coding Plan",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "api_key": "",
+      "model": "",
+      "needs_key": true,
+      "local": false,
+      "hint": "Coding Plan 专属端点。按量付费的 key 请改用 https://open.bigmodel.cn/api/paas/v4"
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "",
+      "model": "deepseek-v4-flash",
+      "needs_key": true,
+      "local": false,
+      "hint": "官网 API。deepseek-reasoner 会输出思考过程，语音场景建议用 deepseek-chat。"
+    },
+    "siliconflow": {
+      "label": "硅基流动",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "api_key": "",
+      "model": "",
+      "needs_key": true,
+      "local": false,
+      "hint": "聚合平台，模型很多。语音对话建议选小一点的模型，延迟低。"
+    },
+    "grok": {
+      "label": "Grok · xAI",
+      "base_url": "https://api.x.ai/v1",
+      "api_key": "",
+      "model": "grok-4.20-0309-non-reasoning",
+      "needs_key": true,
+      "local": false,
+      "hint": "xAI 官方 API，OpenAI 兼容。模型列表点「拉取模型」从接口读取。"
+    }
+  },
+  "_comment_example": "This is the tracked template. Copy it to providers.json and fill in api_key there; providers.json is gitignored and never leaves this machine."
+}
