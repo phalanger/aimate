@@ -109,7 +109,28 @@ export class Avatar {
 
     this._onResize = this._onResize.bind(this);
     window.addEventListener("resize", this._onResize);
+    // The stage changes size without the window changing size: showing or
+    // hiding the side panel takes width from it. A window listener never
+    // hears about that, so the canvas kept its old backing size and the
+    // camera its old aspect, and the model came out stretched until the
+    // window itself was touched.
+    //
+    // Watching the canvas rather than listening for each thing that might
+    // move it means nothing has to remember to announce a layout change.
+    this._observer =
+      typeof ResizeObserver === "function" ? new ResizeObserver(this._onResize) : null;
+    if (this._observer) {
+      this._observer.observe(this.canvas);
+    }
     this._onResize();
+  }
+
+  dispose() {
+    window.removeEventListener("resize", this._onResize);
+    if (this._observer) {
+      this._observer.disconnect();
+      this._observer = null;
+    }
   }
 
   _setupLights() {
@@ -126,8 +147,14 @@ export class Avatar {
   }
 
   _onResize() {
-    const width = this.canvas.clientWidth || 1;
-    const height = this.canvas.clientHeight || 1;
+    const width = this.canvas.clientWidth;
+    const height = this.canvas.clientHeight;
+    // Laid out to nothing - hidden, or not measured yet. Taking that as a
+    // real size would set the aspect to something arbitrary and hold it until
+    // the next change; the observer will call back once there is a box.
+    if (!width || !height) {
+      return;
+    }
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();

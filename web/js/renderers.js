@@ -204,6 +204,12 @@ class VrmRenderer extends BaseRenderer {
   }
 
   dispose() {
+    // The avatar holds a window listener and a resize observer on the canvas.
+    // Dropping the reference without telling it leaves both attached to a
+    // canvas that is about to go away, once per character switch.
+    if (this.avatar && this.avatar.dispose) {
+      this.avatar.dispose();
+    }
     this.avatar = null;
     super.dispose();
   }
