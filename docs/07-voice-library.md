@@ -45,8 +45,8 @@ client.updateSession({ instructions: ..., voice: character.voice });
 ```json
 {
   "voices": {
-    "v-xiaoling": {
-      "label": "小玲的声音",
+    "v-xiaoshu": {
+      "label": "小舒的声音",
       "file": "assets/voices/voice-ms4cu9tx.wav",
       "ref_text": "今天天气不错，我们出去走走吧。",
       "created": "2026-07-29"
