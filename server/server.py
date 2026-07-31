@@ -28,6 +28,7 @@ Endpoints
     GET  /api/voicepacks          the saved voices, plus the cloning mode the
                                   pipeline is configured for
     POST /api/transcribe?file=    transcribe a reference clip for ref_text
+    POST /api/musetalk/still      pick a reference still out of the idle clip
     POST /api/record              mux a recorded reply into recordings/
 """
 
@@ -811,6 +812,8 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self._proxy_chat()
             elif route == "/api/musetalk/prepare":
                 self._prepare_musetalk()
+            elif route == "/api/musetalk/still":
+                self._pick_musetalk_still()
             elif route == "/api/record":
                 self._post_record()
             else:
@@ -1374,6 +1377,61 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
             raise PanelError(exc.code, detail)
         except Exception as exc:
             raise PanelError(502, "lip-sync service unreachable: %s" % exc)
+
+    def _pick_musetalk_still(self):
+        """Derive a reference still from the idle clip, for characters with none.
+
+        A reference still is required, and leaving it empty did not report
+        anything - the prepare button simply did nothing, which is how a
+        character ended up configured that way and apparently just broken.
+
+        The panel decides where the file goes; the service only decides which
+        frame. Writing it next to the clip under a derived name means it shows
+        up in the folder scan like any other asset, so it can be previewed,
+        kept, or replaced with a better photograph - which it usually should
+        be. A supplied still tends to have far more face pixels than any frame
+        of the clip; see docs/05-lipsync-spike.md.
+        """
+        payload = json.loads(self._read_body().decode("utf-8"))
+        idle = payload.get("idle_video", "")
+        if not idle:
+            raise PanelError(400, "idle_video is required")
+
+        resolved = idle if os.path.isabs(idle) else os.path.abspath(os.path.join(PATHS.root, idle))
+        if not resolved.startswith(PATHS.assets + os.sep):
+            raise PanelError(400, "idle_video must stay inside the assets directory")
+        if not os.path.exists(resolved):
+            raise PanelError(404, "no such file: " + idle)
+
+        stem = os.path.splitext(os.path.basename(resolved))[0]
+        out_path = os.path.join(os.path.dirname(resolved), stem + "-frame.png")
+
+        body = json.dumps(
+            {"idle_video": resolved.replace("\\", "/"), "out_path": out_path.replace("\\", "/")}
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            MUSETALK_URL + "/pick_still",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            # Decoding a few dozen frames and running a CPU face detector over
+            # them; seconds, not minutes.
+            with urllib.request.urlopen(request, timeout=180) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise PanelError(exc.code, detail)
+        except Exception as exc:
+            raise PanelError(502, "lip-sync service unreachable: %s" % exc)
+
+        # Hand back the path the browser can use, which is relative to the
+        # project root like every other asset in the editor's lists.
+        still = data.get("still") or {}
+        if still.get("path"):
+            still["path"] = os.path.relpath(still["path"], PATHS.root).replace("\\", "/")
+        self._send_json(data)
 
     def _post_record(self):
         """Store a recorded reply, muxing in the subtitle track if asked.

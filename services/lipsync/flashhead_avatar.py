@@ -126,6 +126,63 @@ def face_detector():
     return _FACE_DETECTOR
 
 
+_FACE_MESH = None
+_FACE_MESH_TRIED = False
+
+
+def face_mesh():
+    """Landmark model, used only to tell an open mouth from a closed one.
+
+    Separate from the detector above because that one reports six keypoints
+    with a single point for the mouth, which cannot express whether it is
+    open. Returns None if the model is unavailable, and the caller then says
+    the mouth was not checked rather than assuming it was fine.
+    """
+    global _FACE_MESH, _FACE_MESH_TRIED
+    if not _FACE_MESH_TRIED:
+        _FACE_MESH_TRIED = True
+        try:
+            import mediapipe as mp
+
+            _FACE_MESH = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=True, max_num_faces=1, refine_landmarks=False
+            )
+        except Exception:
+            _FACE_MESH = None
+    return _FACE_MESH
+
+
+# Face mesh landmark indices: the inner lip centres and the mouth corners.
+LIP_TOP, LIP_BOTTOM, LIP_LEFT, LIP_RIGHT = 13, 14, 61, 291
+
+
+def _mouth_openness(frame_bgr):
+    """Lip separation over mouth width, or None if it could not be measured.
+
+    Scale free, so it means the same on any clip: a closed mouth sits near
+    zero and a wide open one well above 0.2.
+    """
+    mesh = face_mesh()
+    if mesh is None:
+        return None
+    result = mesh.process(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+    if not result.multi_face_landmarks:
+        return None
+    points = result.multi_face_landmarks[0].landmark
+    height, width = frame_bgr.shape[:2]
+
+    def at(index):
+        return (points[index].x * width, points[index].y * height)
+
+    top, bottom = at(LIP_TOP), at(LIP_BOTTOM)
+    left, right = at(LIP_LEFT), at(LIP_RIGHT)
+    span = ((left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2) ** 0.5
+    if span <= 0:
+        return None
+    gap = ((top[0] - bottom[0]) ** 2 + (top[1] - bottom[1]) ** 2) ** 0.5
+    return gap / span
+
+
 def _imread(path):
     """cv2.imread that survives a non-ASCII path.
 
@@ -163,6 +220,243 @@ def _face_box(image_bgr):
     height, width = image_bgr.shape[:2]
     x1, y1, x2, y2 = boxes[0][:4]
     return (x1 * width, y1 * height, x2 * width, y2 * height)
+
+
+# How many frames to look at when picking a reference still. Evenly spaced
+# across the clip rather than consecutive, so a slow head turn is sampled at
+# several angles instead of forty times at one.
+STILL_SCAN_FRAMES = 48
+
+# A candidate's face must be at least this fraction of the largest face found.
+# In a static shot nothing is dropped; this is aimed at clips where the subject
+# moves towards or away from the camera.
+STILL_MIN_FACE_RATIO = 0.9
+
+# Of the frames that survive the size filter, keep this fraction - the most
+# front-on ones - before choosing on sharpness.
+STILL_FRONTAL_KEEP = 0.5
+
+# Lip separation, as a fraction of mouth width, at or below which the mouth
+# counts as closed. Frames at or under this are preferred outright; if none
+# qualify - a clip of someone talking throughout - the most closed half is
+# kept instead, and the chosen frame's value is reported either way.
+STILL_MOUTH_CLOSED = 0.08
+STILL_MOUTH_KEEP = 0.5
+
+
+def _face_candidates(frame_bgr):
+    """One face's box and eye keypoints, or None.
+
+    Returns (box, left_eye, right_eye) with the eyes possibly None: the shared
+    CPUFaceHandler wrapper hands back boxes and scores only, so the keypoints
+    come from the mediapipe result underneath it. That is a private detail of
+    a checkout we pin, so it is reached for defensively - and when it is not
+    there, the caller is told rather than quietly scored as perfectly frontal.
+    """
+    height, width = frame_bgr.shape[:2]
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+    detector = getattr(face_detector(), "detector", None)
+    if detector is None:
+        boxes, _ = face_detector()(rgb)
+        if len(boxes) != 1:
+            return None
+        x1, y1, x2, y2 = boxes[0][:4]
+        return ((x1 * width, y1 * height, x2 * width, y2 * height), None, None)
+
+    detections = detector.process(rgb).detections
+    if not detections or len(detections) != 1:
+        return None
+    data = detections[0].location_data
+    relative = data.relative_bounding_box
+    box = (
+        relative.xmin * width,
+        relative.ymin * height,
+        (relative.xmin + relative.width) * width,
+        (relative.ymin + relative.height) * height,
+    )
+    points = list(getattr(data, "relative_keypoints", []) or [])
+    if len(points) < 3:
+        return (box, None, None)
+    # mediapipe's face detector orders these right eye, left eye, nose tip.
+    eyes = [(points[0].x * width, points[0].y * height), (points[1].x * width, points[1].y * height)]
+    nose = (points[2].x * width, points[2].y * height)
+    return (box, eyes, nose)
+
+
+def _asymmetry(eyes, nose):
+    """How far off front-on the face is, 0 being square to the camera.
+
+    The two eye-to-nose distances are equal on a front-on face and diverge as
+    the head turns. Divided by the distance between the eyes so the number
+    means the same thing at any face size.
+    """
+    (lx, ly), (rx, ry) = eyes
+    left = ((lx - nose[0]) ** 2 + (ly - nose[1]) ** 2) ** 0.5
+    right = ((rx - nose[0]) ** 2 + (ry - nose[1]) ** 2) ** 0.5
+    interocular = ((lx - rx) ** 2 + (ly - ry) ** 2) ** 0.5
+    if interocular <= 0:
+        return None
+    return abs(left - right) / interocular
+
+
+# Fraction of the face box, from the top, that the sharpness measure looks at.
+# Enough for brows and eyes, stopping above the mouth.
+SHARPNESS_UPPER_FACE = 0.55
+
+
+def _sharpness(frame_bgr, box):
+    """Laplacian variance over the upper face - brows and eyes, not the mouth.
+
+    Comparable here and only here: every candidate is a frame of one clip, at
+    one resolution, cropped to the same feature. The same measure taken across
+    images that have been scaled differently says nothing, which it has already
+    been used to do wrongly once - see docs/05-lipsync-spike.md.
+
+    The mouth is excluded because including it does not measure sharpness, it
+    measures how open the mouth is. Teeth, tongue and the lip line are all
+    high-contrast edges that appear when the mouth opens, so on the whole face
+    box this reliably picked the frame where the subject was mid-vowel - two
+    of three clips here, one of them with the tongue out. Blur affects the
+    whole frame, so the upper half answers the intended question without
+    answering that one too.
+    """
+    height, width = frame_bgr.shape[:2]
+    x1, y1, x2, y2 = box
+    x1 = max(0, int(x1))
+    y1 = max(0, int(y1))
+    x2 = min(width, int(x2))
+    y2 = min(height, int(y2))
+    y2 = y1 + max(1, int((y2 - y1) * SHARPNESS_UPPER_FACE))
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return 0.0
+    crop = cv2.cvtColor(frame_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(crop, cv2.CV_64F).var())
+
+
+def pick_reference_frame(video_path, out_path, scan=STILL_SCAN_FRAMES):
+    """Choose a frame of the idle clip to serve as the reference still.
+
+    Only ever a fallback for a still nobody supplied. A photograph taken for
+    the purpose is usually far better - measured on this project's own
+    characters, two of three had roughly twice the face pixels of anything
+    their clip could offer - so this never replaces one that is set.
+
+    Candidates are filtered rather than scored, in this order: exactly one
+    face, a face within STILL_MIN_FACE_RATIO of the largest seen, the more
+    front-on half, then the sharpest of what is left. Filters instead of
+    weights because the weights would be invented and the filters can be
+    explained.
+
+    Writes the chosen frame and returns what it chose and why, so the panel can
+    show it. Whether the mouth is open in that frame is not considered - this
+    detector exposes a single mouth point, and the effect has not been
+    measured; the file is written for the user to look at and replace.
+    """
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        raise RuntimeError("could not open video: %s" % video_path)
+    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+    if total > 0:
+        indices = sorted(set(int(round(i)) for i in np.linspace(0, total - 1, min(scan, total))))
+        frames = []
+        for index in indices:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok, frame = capture.read()
+            if ok:
+                frames.append((index, frame))
+    else:
+        # Some containers do not report a frame count. Read straight through
+        # and keep every nth, so this still works rather than reporting no
+        # candidates on a clip that plays perfectly well.
+        frames = []
+        index = 0
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            if index % 5 == 0:
+                frames.append((index, frame))
+            index += 1
+        total = index
+    capture.release()
+
+    if not frames:
+        raise RuntimeError("could not read any frame from %s" % video_path)
+
+    candidates = []
+    for index, frame in frames:
+        found = _face_candidates(frame)
+        if found is None:
+            continue
+        box, eyes, nose = found
+        candidates.append(
+            {
+                "index": index,
+                "frame": frame,
+                "box": box,
+                "face_px": box[3] - box[1],
+                "asymmetry": _asymmetry(eyes, nose) if eyes and nose else None,
+                "mouth": _mouth_openness(frame),
+            }
+        )
+
+    if not candidates:
+        raise RuntimeError(
+            "no frame of %s has exactly one detectable face (looked at %d)"
+            % (video_path, len(frames))
+        )
+
+    largest = max(c["face_px"] for c in candidates)
+    kept = [c for c in candidates if c["face_px"] >= largest * STILL_MIN_FACE_RATIO]
+
+    measured = [c for c in kept if c["asymmetry"] is not None]
+    frontal_used = len(measured) == len(kept) and len(kept) > 1
+    if frontal_used:
+        measured.sort(key=lambda c: c["asymmetry"])
+        kept = measured[: max(1, int(len(measured) * STILL_FRONTAL_KEEP))]
+
+    # A reference still says what this face looks like, so a frame caught
+    # mid-vowel is a poor one to hand the model. Whether it actually degrades
+    # the result is untested; preferring a closed mouth costs nothing either
+    # way, and the value that was chosen is reported so it can be judged.
+    mouths = [c for c in kept if c["mouth"] is not None]
+    mouth_used = len(mouths) == len(kept) and len(kept) > 1
+    if mouth_used:
+        closed = [c for c in mouths if c["mouth"] <= STILL_MOUTH_CLOSED]
+        if closed:
+            kept = closed
+        else:
+            mouths.sort(key=lambda c: c["mouth"])
+            kept = mouths[: max(1, int(len(mouths) * STILL_MOUTH_KEEP))]
+
+    for candidate in kept:
+        candidate["sharpness"] = _sharpness(candidate["frame"], candidate["box"])
+    best = max(kept, key=lambda c: c["sharpness"])
+
+    directory = os.path.dirname(out_path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory)
+    _imwrite(out_path, best["frame"])
+
+    height, width = best["frame"].shape[:2]
+    return {
+        "path": out_path.replace("\\", "/"),
+        "frame_index": best["index"],
+        "frames_total": total,
+        "frames_scanned": len(frames),
+        "candidates": len(candidates),
+        "width": width,
+        "height": height,
+        "face_px": round(best["face_px"], 1),
+        # What the crop needs at this zoom. Below 1.0 the reference is being
+        # enlarged to fill 512, so the detail in the mouth is invented.
+        "detail_ratio": round(best["face_px"] / (TARGET_SIZE / DEFAULT_FACE_ZOOM), 2),
+        "frontal_filter": frontal_used,
+        "mouth_filter": mouth_used,
+        "mouth_open": None if best["mouth"] is None else round(best["mouth"], 3),
+    }
 
 
 def _first_frame_and_count(video_path):

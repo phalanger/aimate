@@ -227,6 +227,39 @@ def build_app(state):
         state.avatars[avatar_id] = avatar
         return {"ok": True, "avatar": avatar.describe()}
 
+    @app.post("/pick_still")
+    async def pick_still(payload: dict):
+        """Choose a frame of the idle clip to stand in for a missing still.
+
+        Lives here rather than in the panel because the face detector does -
+        the panel's interpreter has neither OpenCV nor mediapipe. Not part of
+        /prepare: the chosen frame is written out and handed back so the user
+        can see which one it was and swap it, which is the whole point given
+        that its effect on the mouth is not something we have measured.
+        """
+        idle_video = payload.get("idle_video")
+        out_path = payload.get("out_path")
+        if not idle_video or not out_path:
+            return JSONResponse({"error": "idle_video and out_path are required"}, 400)
+
+        module = backend(state)
+        if not hasattr(module, "pick_reference_frame"):
+            # MuseTalk generates from a clip, not a still, so it has no use
+            # for this and no implementation of it.
+            return JSONResponse(
+                {"error": "the %s backend does not use a reference still" % state.args.backend},
+                400,
+            )
+
+        try:
+            # No GPU involved, but it decodes several dozen frames, so keep it
+            # off the event loop.
+            result = await asyncio.to_thread(module.pick_reference_frame, idle_video, out_path)
+        except Exception as exc:
+            traceback.print_exc()
+            return JSONResponse({"error": str(exc)}, 500)
+        return {"ok": True, "still": result}
+
     @app.websocket("/stream")
     async def stream(websocket: WebSocket):
         await websocket.accept()

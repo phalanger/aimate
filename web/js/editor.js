@@ -423,9 +423,15 @@ export class CharacterEditor {
   // cache on disk is reused.
   async _prepareMuseTalk() {
     const status = el("ed-mt-status");
-    const video = el("ed-mt-video").value.trim();
+    let video = el("ed-mt-video").value.trim();
+    const idle = el("ed-mt-idle").value.trim();
     const avatarId = el("ed-mt-id").value.trim();
-    if (!video || !avatarId) {
+    // Returning in silence is what made this button appear dead for a
+    // character that had a clip but no still - which is a state the editor
+    // happily saves. Say which one is missing.
+    if (!avatarId || (!video && !idle)) {
+      status.dataset.warn = "true";
+      status.textContent = this.t(avatarId ? "err_mt_need_clip" : "err_mt_need_id");
       return;
     }
     status.dataset.warn = "false";
@@ -446,7 +452,55 @@ export class CharacterEditor {
       // The panel itself is unreachable; let the attempt below report it.
     }
 
-    status.textContent = this.t("mt_preparing");
+    // No still, but a clip to take one from. Done as its own visible step
+    // rather than inside prepare: the frame is written to the assets folder
+    // and selected here, so it can be looked at and swapped for a proper
+    // photograph - which is usually worth doing, since a photo tends to carry
+    // roughly twice the face pixels of anything a 512 clip can offer.
+    if (!video) {
+      status.textContent = this.t("mt_picking_still");
+      try {
+        const response = await fetch("/api/musetalk/still", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idle_video: idle }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || response.status);
+        }
+        const still = data.still || {};
+        video = still.path || "";
+        // Rescan so the new file is in the list, then select it. Setting the
+        // value before the option exists would silently leave it empty.
+        await this._loadAssets();
+        el("ed-mt-video").value = video;
+        this._captureAvatar();
+        status.textContent = format(this.t("mt_still_picked"), {
+          index: still.frame_index,
+          total: still.frames_total,
+          face: still.face_px,
+          name: video.split("/").pop(),
+        });
+        // Below 1.0 the reference has to be enlarged to fill the model's 512,
+        // so the mouth detail is invented rather than photographed. Worth
+        // saying plainly, because the fix is easy and external: supply a
+        // closer or larger picture.
+        if (still.detail_ratio && still.detail_ratio < 1) {
+          status.dataset.warn = "true";
+          status.textContent += " " + format(this.t("mt_still_soft"), {
+            ratio: still.detail_ratio,
+          });
+        }
+      } catch (err) {
+        status.dataset.warn = "true";
+        status.textContent = this.t("err_mt_still") + err.message;
+        return;
+      }
+    }
+
+    const preparing = status.textContent ? status.textContent + " " : "";
+    status.textContent = preparing + this.t("mt_preparing");
 
     try {
       const response = await fetch("/api/musetalk/prepare", {
@@ -458,7 +512,7 @@ export class CharacterEditor {
         body: JSON.stringify({
           avatar_id: avatarId,
           video_path: video,
-          idle_video: el("ed-mt-idle").value,
+          idle_video: idle,
         }),
       });
       const data = await response.json();
