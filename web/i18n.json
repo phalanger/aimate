@@ -49,7 +49,7 @@
   "lb_voice": "参考音频",
   "lb_upload": "上传新音频",
   "lb_start": "起始（秒）",
-  "lb_duration": "时长（秒）",
+  "lb_duration": "时长（秒，最长 15）",
   "lb_reftext": "参考文本（必须和音频内容逐字一致）",
   "btn_rules": "插入说话规则",
   "btn_play": "试听",
@@ -186,5 +186,9 @@
   "err_fetch": "拉取失败：",
   "err_test": "测试失败：",
   "err_llm_save": "保存失败：",
-  "err_need_model": "请选择或填写模型名。"
+  "err_need_model": "请选择或填写模型名。",
+  "vp_clamped": "（你填的是 {requested} 秒，已按上限截到 {max} 秒）",
+  "vp_mid_speech": "⚠ 切在了句子中间。点「语音识别」会自动裁到最后一个完整句子；自己手打文字的话，别写进没念完的那几个字。",
+  "vp_warn_duplicate": "已保存。但已经有同名的音色了，列表里会分不清。",
+  "vp_warn_mid_speech": "已保存。但这段音频结尾时人还在说话，如果参考文本写了没念到的字，她每句话前面都会多一段。点「重新识别」可以修。"
 }

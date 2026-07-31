@@ -127,10 +127,53 @@ def complete_phrases(chunks, duration):
     return kept, float(boundary)
 
 
+def check(path):
+    """Report whether a clip stops while someone is still talking.
+
+    Split out from transcription because it answers a question worth asking
+    long before a model is involved, and answers it without loading one: this
+    imports numpy and soundfile and nothing else, so it costs about a second
+    rather than the better part of a minute.
+
+    The panel uses it at two moments. Right after a clip is cut, to say that
+    the cut landed inside a sentence. And when a voice is saved with a
+    transcript typed by hand, where nothing else would ever notice that the
+    text claims words the audio does not contain - which is exactly how a
+    reference pair goes wrong, and the cloner then speaks the missing tail at
+    the start of every reply.
+
+    Prints JSON so the caller does not have to parse prose.
+    """
+    import json
+
+    import numpy as np  # noqa: F401  (soundfile needs it present)
+    import soundfile as sf
+
+    audio, rate = sf.read(path, dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    sys.stdout.write(
+        json.dumps(
+            {
+                "duration": round(len(audio) / float(rate), 3),
+                "ends_mid_speech": bool(ends_mid_speech(audio, rate)),
+            }
+        )
+    )
+    return 0
+
+
 def main():
     if len(sys.argv) < 2:
         sys.stderr.write("usage: transcribe.py <wav-path> [language]\n")
+        sys.stderr.write("       transcribe.py --check <wav-path>\n")
         return 2
+
+    if sys.argv[1] == "--check":
+        if len(sys.argv) < 3:
+            sys.stderr.write("usage: transcribe.py --check <wav-path>\n")
+            return 2
+        return check(sys.argv[2])
 
     path = sys.argv[1]
     language = sys.argv[2] if len(sys.argv) > 2 else "zh"

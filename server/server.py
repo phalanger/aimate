@@ -631,6 +631,30 @@ def mux_recording(workdir, source, subtitle_path, mode, crf):
     return os.path.join(workdir, output)
 
 
+def clip_ends_mid_speech(path):
+    """Whether a clip stops while someone is still talking, or None if unknown.
+
+    A separate process for the same reason transcription is: this panel is
+    stdlib-only, and the check needs soundfile. It does not load a model, so it
+    costs about a third of a second rather than the minute transcription takes.
+
+    Returns None rather than raising when the check cannot run. It exists to
+    add a warning, and a warning that cannot be produced must not be able to
+    block saving a voice.
+    """
+    try:
+        result = subprocess.run(
+            [PYTHON, PATHS.transcribe, "--check", path],
+            capture_output=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return None
+        return bool(json.loads(result.stdout.decode("utf-8")).get("ends_mid_speech"))
+    except Exception:
+        return None
+
+
 def transcribe_audio(path, language):
     result = subprocess.run(
         [PYTHON, PATHS.transcribe, path, language],
@@ -988,6 +1012,25 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         packs = load_voicepacks()
         pack_id = (payload.get("id") or "").strip() or new_voicepack_id(packs)
+
+        # Warnings, not refusals. Both of these are usually mistakes and
+        # occasionally deliberate, and a voice the panel will not let you save
+        # is worse than one it lets you save with a note attached.
+        warnings = []
+        duplicate = [
+            other.get("label")
+            for other_id, other in packs.items()
+            if other_id != pack_id and (other.get("label") or "").strip() == label
+        ]
+        if duplicate:
+            warnings.append("duplicate_label")
+        # The transcript can be typed by hand, and nothing else ever compares
+        # it to the audio. A clip that stops mid-phrase almost always means the
+        # text claims words the recording does not reach, which is what makes
+        # the cloned voice speak the missing tail before every reply.
+        if clip_ends_mid_speech(path):
+            warnings.append("ends_mid_speech")
+
         packs[pack_id] = {
             "label": label,
             "file": path.replace("\\", "/"),
@@ -995,7 +1038,9 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
             "created": packs.get(pack_id, {}).get("created") or today(),
         }
         save_voicepacks(packs)
-        self._send_json({"ok": True, "id": pack_id, "voices": self._list_voicepacks()})
+        self._send_json(
+            {"ok": True, "id": pack_id, "warnings": warnings, "voices": self._list_voicepacks()}
+        )
 
     def _retranscribe_voicepack(self):
         """Re-read a saved voice's clip and store what was actually said.
@@ -1115,6 +1160,9 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
             duration = float(self._param("duration", str(DEFAULT_CLIP_SECONDS)) or DEFAULT_CLIP_SECONDS)
         except ValueError:
             duration = DEFAULT_CLIP_SECONDS
+        # Kept so the answer can say what was asked for. convert_audio clamps,
+        # and until now it did so without telling anybody.
+        requested = duration
 
         payload = self._read_body()
         # Keep the original container: ffmpeg sniffs the format, and the
@@ -1139,6 +1187,15 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "sample_rate": rate,
                 "channels": channels,
                 "subtype": subtype,
+                # Said plainly rather than silently applied. A request for 21
+                # seconds became 15 with nothing on screen to say so, and the
+                # cut that produced landed inside a sentence.
+                "clamped_to": MAX_CLIP_SECONDS if requested > MAX_CLIP_SECONDS else None,
+                "requested": requested,
+                # Cheap, and worth knowing before transcribing rather than
+                # after: a cut through the middle of a phrase is what makes the
+                # clip and its transcript describe different speech.
+                "ends_mid_speech": clip_ends_mid_speech(target),
             }
         )
 

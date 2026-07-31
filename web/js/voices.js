@@ -100,10 +100,40 @@ export class VoiceLibrary {
     el("voices-error").hidden = true;
   }
 
+  // Errors go above the list, not at the foot of the dialog.
+  //
+  // The refusal to delete a voice a character still uses worked exactly as
+  // intended and was invisible: the message rendered three screens below the
+  // button that had just been pressed, so it read as "nothing happened". The
+  // user made a second copy of the voice, which is the failure this guard
+  // exists to prevent.
   _fail(message) {
-    const node = el("voices-error");
-    node.textContent = message;
-    node.hidden = false;
+    for (const id of ["voices-error", "voices-error-top"]) {
+      const node = document.getElementById(id);
+      if (node) {
+        node.textContent = message;
+        node.hidden = false;
+      }
+    }
+  }
+
+  _warn(message) {
+    const node = document.getElementById("voices-error-top");
+    if (node) {
+      node.textContent = message;
+      node.hidden = false;
+      node.dataset.tone = "warn";
+    }
+  }
+
+  _clearMessages() {
+    for (const id of ["voices-error", "voices-error-top"]) {
+      const node = document.getElementById(id);
+      if (node) {
+        node.hidden = true;
+        node.dataset.tone = "";
+      }
+    }
   }
 
   async load() {
@@ -284,10 +314,26 @@ export class VoiceLibrary {
         throw new Error(data.error || response.status);
       }
       this.pending = { name: name, path: data.path };
-      status.textContent = format(this.t("vp_clipped"), {
+      let note = format(this.t("vp_clipped"), {
         duration: data.duration,
         rate: data.sample_rate,
       });
+      // Both of these used to happen in silence. Asking for 21 seconds and
+      // getting 15 is the sort of thing you only discover by measuring the
+      // file, and a cut through the middle of a sentence is what leaves the
+      // transcript claiming words the audio never reaches.
+      if (data.clamped_to) {
+        note += " " + format(this.t("vp_clamped"), {
+          requested: data.requested,
+          max: data.clamped_to,
+        });
+        status.dataset.warn = "true";
+      }
+      if (data.ends_mid_speech) {
+        note += " " + this.t("vp_mid_speech");
+        status.dataset.warn = "true";
+      }
+      status.textContent = note;
       if (!el("vp-name").value.trim()) {
         el("vp-name").value = file.name.replace(/\.[^.]+$/, "");
       }
@@ -355,6 +401,18 @@ export class VoiceLibrary {
       }
       this.packs = data.voices || [];
       this._render();
+      // Saved, but worth saying something about. Neither of these is wrong
+      // enough to refuse - a second voice with the same name is occasionally
+      // deliberate, and so is a clip that runs to the edge of a phrase - but
+      // both are usually a mistake that only shows up much later, as a voice
+      // that says half a sentence before every reply.
+      for (const warning of data.warnings || []) {
+        if (warning === "duplicate_label") {
+          this._warn(this.t("vp_warn_duplicate"));
+        } else if (warning === "ends_mid_speech") {
+          this._warn(this.t("vp_warn_mid_speech"));
+        }
+      }
       return true;
     } catch (err) {
       this._fail(this.t("err_voice_save") + err.message);
