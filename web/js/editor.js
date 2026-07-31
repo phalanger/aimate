@@ -13,6 +13,21 @@ function el(id) {
   return node;
 }
 
+// Grow a text box to the height of its content.
+//
+// The persona field is the long one, and at a fixed nine rows it scrolled
+// inside a dialog that also scrolls - two bars for one piece of text. Height is
+// cleared before it is read because scrollHeight cannot shrink below the height
+// already set, so without the reset the box would only ever get taller.
+//
+// CSS caps it with max-height; past that it scrolls again, and this stops
+// fighting it because scrollHeight then exceeds the cap and the assignment is
+// clamped.
+function fitToContent(box) {
+  box.style.height = "auto";
+  box.style.height = box.scrollHeight + "px";
+}
+
 function format(template, values) {
   return template.replace(/\{(\w+)\}/g, (match, key) =>
     values[key] === undefined ? match : String(values[key])
@@ -82,7 +97,9 @@ export class CharacterEditor {
       if (box.value.indexOf("markdown") < 0) {
         box.value = box.value.trimEnd() + this.t("rules_template");
       }
+      fitToContent(box);
     });
+    el("ed-prompt").addEventListener("input", (event) => fitToContent(event.target));
 
     el("ed-voice").addEventListener("change", () => this._showVoiceInfo());
     for (const id of ["ed-vrm", "ed-live2d"]) {
@@ -167,6 +184,9 @@ export class CharacterEditor {
     await this._loadVoices(this.selectedVoiceId, this.legacyVoicePath);
 
     el("editor-backdrop").hidden = false;
+    // Only once the dialog is on screen: a hidden element reports a
+    // scrollHeight of zero, which would size the persona box to nothing.
+    fitToContent(el("ed-prompt"));
     el("ed-label").focus();
   }
 

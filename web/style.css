@@ -769,6 +769,21 @@ button:active {
   resize: vertical;
 }
 
+/* The persona box grows with what is in it instead of scrolling at nine rows.
+ *
+ * A scrolling box inside a scrolling dialog puts two bars next to each other
+ * for one piece of text, and neither of them is the one you reach for. Letting
+ * it grow leaves the dialog's bar as the only one in the common case. The cap
+ * is there so a very long persona cannot push the buttons out of reach - past
+ * that it scrolls again, which is the right trade at that length.
+ *
+ * JS keeps the height in step; see fitToContent in editor.js. This rule is
+ * what stops the box springing back to its rows attribute in between. */
+#ed-prompt {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
 .field input:focus,
 .field textarea:focus,
 .field select:focus {
@@ -1179,13 +1194,63 @@ button:active {
   line-height: 1.6;
 }
 
+/* Scrollbars, everywhere rather than only here.
+ *
+ * Only the transcript used to be styled, so every other scrolling area got
+ * the platform default: a wide light-grey bar with arrow buttons, which on a
+ * dark panel reads as a piece of someone else's interface. It shows up most in
+ * the character editor, where a scrolling text box sits inside a scrolling
+ * dialog and the two bars end up side by side.
+ *
+ * Both syntaxes on purpose. scrollbar-width/scrollbar-color is the standard
+ * one and is what Firefox understands; ::-webkit-scrollbar is what older
+ * Chromium and the WebView2 the desktop shell embeds understand. Where both
+ * apply the standard one wins, and they are set to the same thing.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  /* Inset from the track so the bar reads as floating over the content
+     rather than as a channel cut into the panel. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+  background-clip: padding-box;
+}
+
+/* The corner where a vertical and a horizontal bar meet, which otherwise
+   stays default grey and gives the whole thing away. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* The transcript is a narrow column, so where the bar can be sized it gets a
+   narrower one. Only on the webkit path - a browser that understands
+   scrollbar-width has already applied "thin" from the rule above and ignores
+   this, which is a consistent result rather than a broken one. */
 .transcript::-webkit-scrollbar {
   width: 5px;
 }
 
 .transcript::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 3px;
+  border: 1px solid transparent;
 }
 
 .transcript-empty {
