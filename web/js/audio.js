@@ -130,6 +130,29 @@ export class AudioEngine {
       return;
     }
 
+    // Asking for echo cancellation is not the same as getting it, and the
+    // difference is invisible until she starts answering her own sentences:
+    // her voice reaches the microphone, the server's VAD calls it a barge-in,
+    // and the reply being spoken is cancelled. Recorded here because the only
+    // other evidence is in the voice log, several layers away, where it looks
+    // like the user said something they never said.
+    const track = this.stream.getAudioTracks()[0];
+    this.micSettings = track ? track.getSettings() : {};
+    this.echoCancelled = this.micSettings.echoCancellation !== false;
+    console.log(
+      "[audio] microphone: device=%s echoCancellation=%s noiseSuppression=%s autoGainControl=%s",
+      this.micSettings.deviceId ? this.micSettings.deviceId.slice(0, 8) : "?",
+      this.micSettings.echoCancellation,
+      this.micSettings.noiseSuppression,
+      this.micSettings.autoGainControl
+    );
+    if (!this.echoCancelled) {
+      console.warn(
+        "[audio] echo cancellation is NOT active - she will hear herself and " +
+          "cut her own replies short"
+      );
+    }
+
     this.sourceNode = this.context.createMediaStreamSource(this.stream);
     this.micNode = new AudioWorkletNode(this.context, "mic-capture", {
       numberOfInputs: 1,
