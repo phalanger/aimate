@@ -534,6 +534,12 @@ def _aligned_reference(still_bgr, idle_frame_bgr, target, face_zoom=DEFAULT_FACE
         "idle_face_fraction": round(face_fraction, 4),
         "still_face_fraction": round(still_face / float(height), 4),
         "crop_side": sidei,
+        # Where that crop was taken from. Recorded so a generated frame can be
+        # put back where it came from - the reference is a window onto the
+        # still, and without the window's origin there is no way to say which
+        # part of the original it replaces.
+        "crop_x": x0i,
+        "crop_y": y0i,
         "scale": round(target / float(sidei), 3),
         "face_zoom": round(face_zoom, 3),
         # How much bigger the face ended up than in the clip. Roughly
