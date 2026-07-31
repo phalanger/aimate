@@ -39,6 +39,7 @@
   "hint_interrupt": "她说话时你可以直接插话打断。",
   "compose_placeholder": "打字和她说话，回车发送",
   "send": "发送",
+  "enable_mic": "启用麦克风",
   "notice_no_mic": "没检测到麦克风，已切换为打字模式。她的回复仍然是语音。",
   "editor_new": "新建角色",
   "editor_edit": "编辑角色",

@@ -74,7 +74,7 @@ export class AudioEngine {
     this.held = [];
   }
 
-  async start() {
+  async start(options = {}) {
     if (this.running) {
       return;
     }
@@ -85,13 +85,23 @@ export class AudioEngine {
     await this.context.audioWorklet.addModule("./worklets/audio-playback.js");
 
     this._startPlayback();
-    await this._startMicrophone();
+    if (options.microphone) {
+      await this._startMicrophone();
+    }
 
     if (this.context.state === "suspended") {
       await this.context.resume();
     }
 
     this.running = true;
+  }
+
+  async enableMicrophone() {
+    if (!this.running || this.micAvailable) {
+      return this.micAvailable;
+    }
+    await this._startMicrophone();
+    return this.micAvailable;
   }
 
   async _startMicrophone() {

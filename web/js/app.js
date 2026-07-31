@@ -226,7 +226,8 @@ function applyControls() {
   connect.title = compact ? t(key) : "";
 
   const mute = el("mute");
-  const action = state.muted ? "unmute" : "mute";
+  const needsMic = state.audio && state.audio.running && !state.audio.micAvailable;
+  const action = needsMic ? "enable_mic" : (state.muted ? "unmute" : "mute");
   // One glyph for the microphone either way: which state it is in is already
   // said by the accent colouring that data-active turns on.
   mute.textContent = compact ? t("icon_mic") : t(action);
@@ -881,19 +882,17 @@ async function connect() {
   setStatus("connecting", "thinking");
 
   try {
-    await state.audio.start();
+    await state.audio.start({ microphone: false });
   } catch (err) {
     showError("err_mic");
     setStatus("status_error", "error");
     return;
   }
 
-  // No microphone is not a failure: playback still works, so fall back to
-  // typing rather than refusing to connect.
-  if (!state.audio.micAvailable) {
-    showNotice("notice_no_mic");
-    el("mute").hidden = true;
-  }
+  // Start without prompting for microphone permission. Playback and typed
+  // input work immediately; the microphone button asks for capture when it is
+  // actually wanted.
+  el("mute").hidden = false;
 
   state.audio.onAudioFrame = (base64) => {
     if (state.client && state.connected) {
@@ -1199,6 +1198,19 @@ async function main() {
   });
 
   el("mute").addEventListener("click", () => {
+    if (state.audio.running && !state.audio.micAvailable) {
+      state.audio.enableMicrophone().then((available) => {
+        if (!available) {
+          showNotice("notice_no_mic");
+          return;
+        }
+        el("notice").hidden = true;
+        state.muted = false;
+        state.audio.setMuted(false);
+        applyControls();
+      });
+      return;
+    }
     state.muted = !state.muted;
     state.audio.setMuted(state.muted);
     applyControls();
