@@ -186,6 +186,54 @@ async function saveView(zoom, offsetY) {
   }
 }
 
+// Whether the text box is on screen answers to two things at once: there is
+// nowhere to send a typed line unless connected, and the user may have folded
+// it away for good. Both are decided here, because setting .hidden at either
+// site alone means connecting quietly unfolds a box that was put away.
+function applyCompose() {
+  const folded = el("act-compose").dataset.on === "true";
+  el("compose").hidden = folded || !state.connected;
+  applyControls();
+}
+
+// The two controls under the picture, in words or as single glyphs.
+//
+// Folding the text box away is a statement that this is a voice conversation,
+// and two wide labelled buttons are then the largest thing left covering the
+// picture for no reason - the only one of them ever pressed is the first and
+// last. Shrunk to glyphs they stay reachable without being furniture. The
+// words come back with the text box, where reading matters more than room.
+//
+// All the label setting lives here rather than at each of the places that
+// change the state, because it depends on three things at once - connected,
+// muted, and folded - and splitting it across them is how one of the
+// combinations ends up showing the wrong word.
+function applyControls() {
+  const compact = el("act-compose").dataset.on === "true";
+  document.querySelector(".controls").dataset.compact = String(compact);
+
+  const connect = el("connect");
+  const starting = !state.connected && state.observed && !state.services.voice;
+  let key = "connect";
+  if (state.connected) {
+    key = "disconnect";
+  } else if (starting) {
+    key = "voice_starting";
+  }
+  // The glyph alone says too little to act on, so the words move to the
+  // tooltip rather than being dropped.
+  connect.textContent = compact ? t("icon_" + key) : t(key);
+  connect.title = compact ? t(key) : "";
+
+  const mute = el("mute");
+  const action = state.muted ? "unmute" : "mute";
+  // One glyph for the microphone either way: which state it is in is already
+  // said by the accent colouring that data-active turns on.
+  mute.textContent = compact ? t("icon_mic") : t(action);
+  mute.title = compact ? t(action) : "";
+  mute.dataset.active = String(state.muted);
+}
+
 function showNotice(key) {
   const node = el("notice");
   node.textContent = t(key);
@@ -240,11 +288,10 @@ function watchServices() {
     state.observed = true;
     const needed = neededServices();
 
-    const button = el("connect");
     if (!state.connected) {
-      button.disabled = !services.voice;
-      button.textContent = services.voice ? t("connect") : t("voice_starting");
+      el("connect").disabled = !services.voice;
     }
+    applyControls();
 
     // Name the ones actually being waited on, so two services starting at
     // different speeds do not look like one vague delay.
@@ -358,6 +405,27 @@ function endOfSpeech() {
 
 // ---------- saving ----------
 
+// The character as a person rather than a config key, for filenames.
+function characterLabel() {
+  const character = currentCharacter();
+  return (character && character.label) || state.characterId || "";
+}
+
+// Ask the browser to save a file it can already reach.
+//
+// A same-origin href with a download attribute, rather than fetching the bytes
+// and handing over a blob URL: the file has just been written by the server on
+// this machine, and pulling it through JavaScript memory first would double a
+// video that can run to tens of megabytes for no gain.
+function downloadRecording(url, filename) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename || "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 function setRecordStatus(key, values, tone) {
   const node = el("rec-status");
   let text = t(key);
@@ -458,9 +526,18 @@ async function finishRecording() {
       mode: wanted,
       subtitle: track.cues.length ? buildAss(track.cues, track.keywords) : "",
       crf: setting("save_crf", 20),
-      name: state.characterId,
+      // The character's name as it reads on screen, not its config key: the
+      // key is an internal identifier and made every file look alike.
+      name: characterLabel(),
     });
-    setRecordStatus("rec_done", { path: result.path });
+    // Handed to the browser rather than announced. The panel used to print
+    // "saved to <path>" and leave it there for good - the only way to learn
+    // where the file went, and permanently in the way. A download puts the
+    // file where the user keeps things, under a name they can change if
+    // "ask where to save each file" is on, and the browser's own download
+    // shelf is the receipt. The server's copy is a fallback that expires.
+    downloadRecording(result.url, result.name);
+    el("rec-status").hidden = true;
   } catch (err) {
     el("rec-status").textContent = t("err_record") + (err.message || err);
     el("rec-status").dataset.tone = "error";
@@ -687,6 +764,29 @@ function wireClientEvents(client) {
     addTranscript("user", text);
   });
 
+  // Dropped rather than carried over: if this turn produces no transcript, no
+  // subtitle is better than the previous reply's.
+  //
+  // This has to happen here and not on the first audio chunk, which is where it
+  // used to be. That assumed the voice starts before the words are known - true
+  // of OpenAI's realtime API, which streams transcript deltas alongside the
+  // audio, and false of this pipeline, which has the whole reply as text before
+  // TTS has produced a sample. Measured order on our own server:
+  //
+  //     response.created
+  //     response.output_audio_transcript.done      <- sets lastReplyText
+  //     response.output_audio.delta (first)        <- used to clear it again
+  //
+  // So the text was wiped on every single turn. On-screen subtitles survived,
+  // because their cues are already planned inside the Subtitles object by then,
+  // and that is what hid this: the only things that read lastReplyText
+  // afterwards are replay and save. Replay showed no subtitles, and save fell
+  // back to "no subtitle track", which also silently downgraded the container
+  // from MKV to MP4 - the setting looked ignored.
+  client.on("response.created", () => {
+    state.lastReplyText = "";
+  });
+
   client.on("response.output_audio.delta", (event) => {
     if (!event.delta) {
       return;
@@ -697,9 +797,6 @@ function wireClientEvents(client) {
       // The turn's origin on the speaker's running sample counter, captured on
       // the first position report after this.
       state.replyBase = null;
-      // Dropped rather than carried over: if this turn produces no transcript,
-      // no subtitle is better than the previous reply's.
-      state.lastReplyText = "";
       // Order matters: the renderer needs to know the turn has begun before
       // audio reaches it, so it can hand over the current pose first.
       setStatus("status_speaking", "speaking");
@@ -775,7 +872,7 @@ function wireClientEvents(client) {
     state.connected = false;
     state.speaking = false;
     setStatus("status_idle", "idle");
-    el("connect").textContent = t("connect");
+    applyControls();
   });
 }
 
@@ -885,9 +982,10 @@ async function connect() {
     voice: character.voice,
   });
 
-  el("connect").textContent = t("disconnect");
-  el("compose").hidden = false;
-  el("compose-input").focus();
+  applyCompose();
+  if (!el("compose").hidden) {
+    el("compose-input").focus();
+  }
   setStatus("status_ready", "ready");
 }
 
@@ -900,8 +998,7 @@ async function disconnect() {
   state.connected = false;
   state.speaking = false;
   state.stage.silence();
-  el("connect").textContent = t("connect");
-  el("compose").hidden = true;
+  applyCompose();
   el("notice").hidden = true;
   el("mute").hidden = false;
   setStatus("status_idle", "idle");
@@ -912,8 +1009,8 @@ function applyStaticText() {
   el("app-title").textContent = t("app_title");
   el("characters-title").textContent = t("characters_title");
   el("transcript-title").textContent = t("transcript_title");
-  el("connect").textContent = t("connect");
-  el("mute").textContent = t("mute");
+  // connect and mute are not set here: their labels depend on whether the
+  // text box is folded, so applyControls owns them exclusively.
   el("compose-send").textContent = t("send");
   el("act-replay").textContent = t("icon_replay");
   el("act-replay").title = t("btn_replay");
@@ -923,6 +1020,9 @@ function applyStaticText() {
   el("act-settings").title = t("btn_settings");
   el("act-sidebar").textContent = t("icon_sidebar");
   el("act-sidebar").title = t("btn_sidebar");
+  el("act-compose").textContent = t("icon_compose");
+  el("act-compose").title = t("btn_compose");
+  applyControls();
   el("inset-frame").title = t("inset_title");
   el("error-retry").textContent = t("btn_retry");
   el("compose-input").placeholder = t("compose_placeholder");
@@ -1101,8 +1201,7 @@ async function main() {
   el("mute").addEventListener("click", () => {
     state.muted = !state.muted;
     state.audio.setMuted(state.muted);
-    el("mute").textContent = state.muted ? t("unmute") : t("mute");
-    el("mute").dataset.active = String(state.muted);
+    applyControls();
   });
 
   setupCollapse();
@@ -1150,6 +1249,24 @@ function setupCollapse() {
     const next = shell.dataset.sidebar !== "hidden";
     applySidebar(next);
     window.localStorage.setItem("mate.sidebar.hidden", next ? "1" : "0");
+  });
+
+  // Talking to her by voice is the point; the text box is the fallback. Anyone
+  // who never types wants the bottom of the picture back, and wants it to stay
+  // back across restarts.
+  const applyFold = (folded) => {
+    el("act-compose").dataset.on = String(folded);
+    applyCompose();
+  };
+
+  applyFold(window.localStorage.getItem("mate.compose.folded") === "1");
+  el("act-compose").addEventListener("click", () => {
+    const next = el("act-compose").dataset.on !== "true";
+    applyFold(next);
+    window.localStorage.setItem("mate.compose.folded", next ? "1" : "0");
+    if (!next && state.connected) {
+      el("compose-input").focus();
+    }
   });
 }
 

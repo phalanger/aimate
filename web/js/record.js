@@ -92,8 +92,10 @@ export class Recorder {
     this.canvas.width = size.width;
     this.canvas.height = size.height;
     this.ctx = this.canvas.getContext("2d");
-    // The first frames are captured before the source has necessarily drawn
-    // anything; black is a better opening frame than an uninitialised buffer.
+    // Set once and never changed, because every frame repaints the background
+    // with it - see paint(). The first frames are also captured before the
+    // source has necessarily drawn anything, and black is a better opening
+    // frame than an uninitialised buffer.
     this.ctx.fillStyle = "#000";
     this.ctx.fillRect(0, 0, size.width, size.height);
 
@@ -128,10 +130,24 @@ export class Recorder {
       }
       const current = source();
       if (current) {
+        // Repainted rather than drawn over. The 3D and 2D renderers hand back
+        // a canvas with a transparent background - the character is composited
+        // onto the stage by CSS, not painted onto it - so drawing frame after
+        // frame into the same buffer accumulated every previous pose and the
+        // saved video came out full of ghost trails. The real-footage
+        // renderers hid it: their frames are opaque and cover everything.
+        //
+        // Black to match the stage, whose background is a near-black gradient
+        // (#101116 -> #0a0b0e), and because the destination has to be opaque
+        // anyway: the second pass encodes yuv420p, which has no alpha.
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         try {
           this.ctx.drawImage(current, 0, 0, this.canvas.width, this.canvas.height);
         } catch (err) {
-          // Source not ready this frame; the previous one stays.
+          // Source not ready this frame. This now costs a black frame rather
+          // than repeating the previous one, which is the price of clearing;
+          // it only happens before a video element has its first frame, when
+          // the picture is black regardless.
         }
       }
       this.frameHandle = requestAnimationFrame(paint);

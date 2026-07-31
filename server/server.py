@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import http.server
 import socketserver
 import urllib.error
@@ -48,7 +49,7 @@ import llm_router
 DEFAULT_PORT = 8900
 DEFAULT_HOST = "127.0.0.1"
 
-# Separate process, separate conda environment - see musetalk_service/.
+# Separate process, separate interpreter - see services/lipsync/.
 MUSETALK_URL = "http://127.0.0.1:8930"
 
 LOOPBACK = "127.0.0.1"
@@ -138,10 +139,11 @@ PYTHON = sys.executable
 def find_ffmpeg():
     """Prefer the copy bundled in bin/ so the project stays self-contained.
 
-    Note the bundled binary must be a *static* build. Shared builds (the one
-    that ships with Anaconda, for instance) are a few hundred KB and fail with
-    STATUS_DLL_NOT_FOUND unless their avcodec/avformat DLLs happen to be on
-    PATH - which defeats the point of bundling.
+    Note the bundled binary must be a *static* build. Shared builds are a few
+    hundred KB and fail with STATUS_DLL_NOT_FOUND unless their avcodec/avformat
+    DLLs happen to be on PATH - which defeats the point of bundling. The one
+    that cost an afternoon shipped with Anaconda, since removed from this
+    machine, but any package manager's ffmpeg is likely to be the same shape.
     """
     bundled = os.path.join(PATHS.bin, "ffmpeg.exe")
     if os.path.exists(bundled):
@@ -253,6 +255,55 @@ def read_characters():
             return json.load(handle)
     except Exception:
         return {}
+
+
+def write_characters(data):
+    """Save characters.json the way the PUT endpoint does.
+
+    One backup, and a temporary file swapped into place: an interrupted write
+    would leave the file truncated, and the panel does not start without it.
+    """
+    if os.path.exists(PATHS.characters):
+        shutil.copyfile(PATHS.characters, PATHS.characters + ".bak")
+    temp = PATHS.characters + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(temp, PATHS.characters)
+
+
+def update_character_transcripts(pack_id, clip_path, was, text):
+    """Refresh the copy of a transcript that characters keep beside their voice.
+
+    Matched the same way deletion is: by voice_id, or by clip path for a
+    character saved before the library existed and so carrying only the path.
+    Returns the labels of the characters that changed.
+    """
+
+    def same_file(a, b):
+        return bool(a) and bool(b) and os.path.normcase(os.path.normpath(a)) == os.path.normcase(
+            os.path.normpath(b)
+        )
+
+    data = read_characters()
+    characters = data.get("characters")
+    if not isinstance(characters, dict):
+        return []
+
+    changed = []
+    for name, character in characters.items():
+        if not isinstance(character, dict):
+            continue
+        mine = character.get("voice_id") == pack_id or (
+            not character.get("voice_id") and same_file(character.get("voice"), clip_path)
+        )
+        if mine and character.get("ref_text", was) != text:
+            character["ref_text"] = text
+            changed.append(character.get("label") or name)
+
+    if changed:
+        write_characters(data)
+    return changed
 
 
 def new_voicepack_id(existing):
@@ -385,6 +436,57 @@ def convert_audio(source, target, start, duration):
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", "replace").strip()[:400]
         raise PanelError(400, "ffmpeg failed: " + (detail or "unknown error"))
+
+
+RECORDING_KEEP_DAYS = 7
+
+
+def recording_stem(name):
+    """A filename for a saved reply that says which character and when.
+
+    The old form was "reply-<stamp>-<id>", where the id was stripped to ASCII -
+    so a character called the equivalent of "Ling" showed up as "char1" and a
+    Chinese label vanished entirely, leaving files nobody could tell apart.
+    Word characters are kept instead of a Latin whitelist, which admits any
+    script; the source file stays ASCII because the rule is expressed as a
+    class, not as a list of letters.
+
+    Separators are dropped rather than replaced so a name cannot reach out of
+    the directory: no dots, no slashes, no colons survive.
+    """
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    label = re.sub(r"[^\w-]", "", str(name or ""), flags=re.UNICODE)[:24]
+    return (label + "-" + stamp) if label else ("reply-" + stamp)
+
+
+def prune_recordings(days=RECORDING_KEEP_DAYS):
+    """Drop saved replies older than the retention window.
+
+    The browser keeps its own copy wherever it was downloaded to, so what is
+    left here is a safety net for a download that failed or was cancelled, not
+    the library. Left to itself it would grow without limit - these are
+    minutes-long H.264 files.
+
+    Runs after a save rather than on a timer: it is the only moment the
+    directory is known to be in use, and it costs one listdir.
+    """
+    cutoff = time.time() - days * 86400
+    removed = 0
+    try:
+        entries = os.listdir(PATHS.recordings)
+    except OSError:
+        return 0
+    for entry in entries:
+        path = os.path.join(PATHS.recordings, entry)
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            # Being deleted by someone else, or open in a player. Neither is
+            # worth failing a save that has already succeeded.
+            continue
+    return removed
 
 
 def mux_recording(workdir, source, subtitle_path, mode, crf):
@@ -564,6 +666,8 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self._post_voicepack()
             elif route == "/api/transcribe":
                 self._post_transcribe()
+            elif route == "/api/voicepacks/retranscribe":
+                self._retranscribe_voicepack()
             elif route == "/v1/chat/completions":
                 self._proxy_chat()
             elif route == "/api/musetalk/prepare":
@@ -811,6 +915,54 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         save_voicepacks(packs)
         self._send_json({"ok": True, "id": pack_id, "voices": self._list_voicepacks()})
 
+    def _retranscribe_voicepack(self):
+        """Re-read a saved voice's clip and store what was actually said.
+
+        Needed because transcribing is only otherwise reachable while building
+        a new voice, so a voice whose transcript is wrong could only be fixed
+        by making it again from the original file - which the user may no
+        longer have.
+
+        The whole job runs here rather than as two calls from the browser: the
+        clip may get shortened on the way through (see server/transcribe.py),
+        and leaving the panel to notice that and write the text back would mean
+        a failure between the two steps leaves the pair mismatched, which is
+        the exact fault this is here to repair.
+        """
+        pack_id = self._param("id")
+        packs = load_voicepacks()
+        if pack_id not in packs:
+            raise PanelError(404, "no such voice: %s" % pack_id)
+
+        path = os.path.abspath(packs[pack_id].get("file", ""))
+        if not path.startswith(PATHS.voices + os.sep):
+            raise PanelError(400, "the clip must live in assets/voices")
+        if not os.path.exists(path):
+            raise PanelError(404, "the clip is missing: " + path)
+
+        was = packs[pack_id].get("ref_text", "")
+        text = transcribe_audio(path, self._param("language", "zh"))
+        packs[pack_id]["ref_text"] = text
+        save_voicepacks(packs)
+
+        # Characters carry a copy of the transcript, written when the voice was
+        # chosen. Nothing reads it at run time - the pipeline is served from
+        # voices.json - but leaving stale text sitting next to the right text
+        # is how the two drifted apart in the first place.
+        updated = update_character_transcripts(pack_id, path, was, text)
+
+        duration, _, _, _ = audio_info(path)
+        self._send_json(
+            {
+                "ok": True,
+                "id": pack_id,
+                "text": text,
+                "duration": duration,
+                "characters": updated,
+                "voices": self._list_voicepacks(),
+            }
+        )
+
     def _delete_voicepack(self):
         pack_id = self._param("id")
         packs = load_voicepacks()
@@ -966,17 +1118,39 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         window is shown in between. Without this the page offers a Connect
         button during that gap, and pressing it produces a connection error
         that looks like a broken install rather than "not up yet".
-        """
-        import socket
 
-        def listening(port):
+        Asked over HTTP rather than by opening a socket and dropping it. Both
+        services are asyncio servers, and a connection closed before the server
+        has accepted it fails the pending accept - which the proactor answers
+        by closing the listening socket outright. The process stays up with the
+        models loaded and the port simply disappears, so every later check says
+        "not started" about something that already started.
+
+        That is not theoretical. The page polls this every two seconds for the
+        whole of startup, which is exactly the window where the race lives, and
+        it took the voice pipeline off its port at 117 ms after it opened. An
+        HTTP request cannot do it: the server has to accept and answer before
+        the client is in a position to close anything.
+        """
+
+        def answering(url):
             try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.4):
+                # No proxy: this machine sets HTTP_PROXY, and a loopback check
+                # sent through it would report every service as down.
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(url, timeout=1.0):
                     return True
-            except OSError:
+            except urllib.error.HTTPError:
+                # 404 from the voice pipeline, which serves only a websocket
+                # route. Answering at all is the question being asked.
+                return True
+            except Exception:
                 return False
 
-        return {"voice": listening(8765), "lipsync": listening(8930)}
+        return {
+            "voice": answering("http://127.0.0.1:8765/"),
+            "lipsync": answering(MUSETALK_URL + "/health"),
+        }
 
     def _musetalk_status(self):
         """Whether the lip-sync service is up, so the panel can say so."""
@@ -1038,7 +1212,6 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         hand-rolling multipart parsing on top of the stdlib.
         """
         import base64
-        import time
 
         # Comfortably above a base64-encoded minute of the 8 Mbit/s
         # intermediate the browser produces.
@@ -1066,9 +1239,7 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
             crf = 20
         crf = max(14, min(crf, 32))
 
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        label = re.sub(r"[^A-Za-z0-9_-]", "", str(payload.get("name") or ""))[:24]
-        stem = "reply-" + stamp + ("-" + label if label else "")
+        stem = recording_stem(payload.get("name"))
 
         if not os.path.isdir(PATHS.recordings):
             os.makedirs(PATHS.recordings)
@@ -1091,11 +1262,15 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
+        prune_recordings()
+
         self._send_json(
             {
                 "ok": True,
                 "path": target,
                 "name": os.path.basename(target),
+                # Where the browser fetches it from to run its own download.
+                "url": "/recordings/" + urllib.parse.quote(os.path.basename(target)),
                 "bytes": os.path.getsize(target),
             }
         )
@@ -1108,7 +1283,13 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         if not os.path.exists(path):
             raise PanelError(404, "no such voice: " + name)
         language = self._param("language", "zh")
-        self._send_json({"ok": True, "text": transcribe_audio(path, language)})
+        text = transcribe_audio(path, language)
+        # Transcribing can shorten the clip: a phrase the cut left unfinished
+        # is dropped from both the text and the audio, because the two have to
+        # describe the same speech. Report the length back so the panel shows
+        # what the reference actually is now.
+        duration, _, _, _ = audio_info(path)
+        self._send_json({"ok": True, "text": text, "duration": duration})
 
     # ---------- static ----------
 
@@ -1125,6 +1306,19 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def translate_path(self, path):
         clean = urllib.parse.urlparse(path).path
+        # Saved replies are fetched back by the browser so it can run its own
+        # download - which is what puts the file where the user wants it, under
+        # whatever name, using the Save As dialog they already have. Served
+        # read-only and one directory deep; the base implementation's traversal
+        # handling is reused rather than reimplemented, same as /assets/.
+        recordings = "/recordings/"
+        if clean.startswith(recordings):
+            saved = self.directory
+            try:
+                self.directory = PATHS.recordings
+                return super().translate_path("/" + clean[len(recordings):])
+            finally:
+                self.directory = saved
         prefix = "/assets/"
         if clean.startswith(prefix):
             rest = clean[len(prefix):]
