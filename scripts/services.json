@@ -1,6 +1,7 @@
 {
   "_comment": "进程表。supervisor.py 按这里的定义启动、探活、重启所有服务，是唯一的事实来源——start-*.ps1 现在只是 supervisor 的薄封装，不再各自持有一份启动参数。",
   "_vars": "命令行和环境变量里的 {name} 会被 vars 替换。{root} 是项目根目录，{bind} 由 config\\settings.json 的 lan_access 决定。",
+  "_note_python": "三个解释器都在 runtime\\python 下，各自独立，谁也不认识谁。为什么是三个：语音流水线要 torch 2.9.1+cu128，FlashHead 要 2.7.1+cu128，MuseTalk 要 2.0.1+cu118，装在一起必然打架。为什么在项目里而不是交给包管理器：它们原来是 conda 环境，卸载 Anaconda 时整套搬了过来。搬得动是因为里面除了解释器本身全是 pip 装的，conda 只提供了 python、openssl、sqlite 这几样，而 Windows 上的 python.exe 是按自己的位置找 sys.prefix 的——换个目录照样跑。搬完之后这个项目不再需要任何全局 Python。",
   "_ready": "ready 是探活方式：tcp 探端口，http 探接口，none 表示启动即算就绪。supervisor 等到就绪才启动依赖它的服务。",
   "_common_env": "加在每个受管服务上的环境变量，服务自己的 env 会覆盖同名项。代理放这里而不是只给面板：语音流水线启动时 torch.hub 会去 GitHub 取 silero-vad、nltk 也会联网检查，拿不到代理就会一直挂在那里连不上——表现为语音服务永远启动不完。NO_PROXY 保证本机之间的调用不绕代理。留空时这些变量不会被设置，沿用启动环境里已有的。",
   "common_env": {
@@ -12,9 +13,9 @@
     "no_proxy": "{no_proxy}"
   },
   "vars": {
-    "python_s2s": "D:\\Apps\\anaconda3\\envs\\s2s\\python.exe",
-    "python_musetalk": "D:\\Apps\\anaconda3\\envs\\musetalk\\python.exe",
-    "python_flashhead": "D:\\Apps\\anaconda3\\envs\\flashhead\\python.exe",
+    "python_s2s": "{root}\\runtime\\python\\s2s\\python.exe",
+    "python_musetalk": "{root}\\runtime\\python\\musetalk\\python.exe",
+    "python_flashhead": "{root}\\runtime\\python\\flashhead\\python.exe",
     "ollama_host": "127.0.0.1:11700",
     "panel_port": "8900",
     "voice_port": "8765",
@@ -59,7 +60,7 @@
     {
       "id": "lipsync",
       "label": "口型服务（FlashHead）",
-      "note": "只有显示方式为「真人口型」的角色才用得上。自己一个 conda 环境：它要 torch 2.7.1+cu128，语音流水线要 torch 2.9.1+cu128，MuseTalk 又要 2.0.1+cu118。换回 MuseTalk 就把 --backend 改成 musetalk、python 换成 {python_musetalk}。对比数据见 docs/05-lipsync-spike.md。",
+      "note": "只有显示方式为「真人口型」的角色才用得上。自己一个解释器：它要 torch 2.7.1+cu128，语音流水线要 torch 2.9.1+cu128，MuseTalk 又要 2.0.1+cu118。换回 MuseTalk 就把 --backend 改成 musetalk、python 换成 {python_musetalk}。对比数据见 docs/05-lipsync-spike.md。",
       "optional": true,
       "command": [
         "{python_flashhead}",
@@ -75,20 +76,22 @@
         "type": "http",
         "url": "http://127.0.0.1:{lipsync_port}/health"
       },
-      "note_timeout": "加载约 13 秒，之后还要预热 torch.compile：有编译缓存时约 27 秒，缓存是冷的（换了显卡驱动或 torch 版本）第一次要四分钟。宁可等也不要让第一句话卡住，所以给得宽。",
+      "note_timeout": "加载约 13 秒，之后还要预热 torch.compile：有编译缓存时约 27 秒（实测整体 65 秒就绪），缓存是冷的第一次要几分钟。什么会让缓存变冷：换显卡驱动、换 torch 版本，以及**挪动解释器目录**——2026-07-29 从 conda 搬到 runtime\\python 之后第一次启动超过了 420 秒、报了「did not become ready」，服务其实自己起来了，第二次就回到 65 秒。这种超时只会发生一次，不用改这个值。宁可等也不要让第一句话卡住，所以给得宽。",
       "ready_timeout": 420
     },
     {
       "id": "voice",
       "label": "语音流水线",
       "note": "VAD、识别、合成都在这一个进程里，不是三个服务。首次启动要下载 Whisper large-v3-turbo，约 1.6 GB。",
+      "_note_launcher": "不直接跑 speech_to_speech.s2s_pipeline，而是走 services\\voice\\launcher.py。它给上游打两个补丁。第二个是让 whisper 每句只识别一遍——库里那段「读一下刚才是哪国话」的代码在这个 transformers 版本上永远读空，于是每句都白白重新生成一遍，一句话多等 50 到 130 毫秒，细节见 docs/07-voice-library.md 四点六。第一个是：切换角色时让参考文本跟着参考音频一起换。Realtime 协议的 session 里只有 voice 一个字段放得下音频路径，放不下这段音频的逐字稿，所以库那边换了音频、文本还留在启动参数上——每个非默认角色都在用「别人的声音配别人的话」克隆。配对关系在 config\\voices.json 里，按路径查得回来。补丁写在我们自己的仓库里，重装依赖不会丢。",
+      "_note_ref_text": "ref_text 是兜底：launcher 认得出 ref_audio 时会用 voices.json 里配对的那条覆盖它。两者不一致时以 voices.json 为准，因为音色库改文本不会回头改这里。",
+      "_note_icl": "不要加回 --qwen3_tts_xvec_only。那个开关只用说话人向量、完全忽略参考文本，官方自己写的是「效果有限」。它当初开着是因为文本对不上，现在文本跟得上了，走 ICL 模式（默认）才是质量最好的那条。",
       "depends_on": [
         "panel"
       ],
       "command": [
         "{python_s2s}",
-        "-m",
-        "speech_to_speech.s2s_pipeline",
+        "{root}\\services\\voice\\launcher.py",
         "--mode",
         "realtime",
         "--ws_host",
@@ -124,10 +127,17 @@
         "{ref_audio}",
         "--qwen3_tts_ref_text",
         "{ref_text}",
-        "--qwen3_tts_xvec_only",
         "--thresh",
-        "0.4"
+        "0.4",
+        "--enable_live_transcription",
+        "false",
+        "--min_silence_ms",
+        "500",
+        "--speculative_reopen_ms",
+        "2200"
       ],
+      "_note_live_transcription": "必须显式关掉，库里它默认是开的。开着的时候 VAD 每 0.5 秒就把「到目前为止说的」当成一段音频发给识别器，本意是给界面滚动显示实时字幕。但这条路只有 parakeet 识别器实现对了——它会把中途的结果标成 PartialTranscription；whisper 没做这个判断，一律当成定稿的 Transcription 交出去。于是你开口 0.5 秒，第一小段就被当成「这句说完了」，回复立刻开始生成，同一轮后面所有音频（包括真正说完时那一段完整的）全被当成过期输入丢掉——日志里就是 dropping stale STT input-after-final，每轮必现。表现就是「她老是没听完我说话」，而且和你停顿多久完全无关：不管 min_silence_ms 和 speculative_reopen_ms 调成什么，抢答都发生在开口后 384 毫秒。我们的界面本来就不显示实时字幕，这条路只有害处。",
+      "_note_vad": "关掉实时字幕之后，「你停下之后她还愿意等多久」才真正由这两个值决定，加起来算。min_silence_ms 是静音多久算这一段说完了（库默认 64 毫秒，比中文词间停顿还短）；speculative_reopen_ms 是这一段定稿之后、回复提交之前的宽限期，在这段时间里你要是接着说，这一轮会被重开、连同后半句重新识别（库默认 1000 毫秒）。现在 500+2200 约等于停下 2.7 秒才答。老被打断就把 speculative_reopen_ms 往上加，嫌她反应慢就往下减，这一项是主要的那个。注意先看 _note_live_transcription：这两个值调过好几轮都没用，因为当时抢答根本不发生在静音之后。",
       "cwd": "{root}",
       "_env_offline": "HF_HUB_OFFLINE=1 让 transformers 直接用本地缓存，不去 huggingface.co 查更新。模型下载好之后那些请求纯属多余，而且从终端启动时它们走的是会话里的代理、双击 exe 启动时没有代理，会一路超时重试到语音服务起不来。第一次下载模型时把它改成 0。",
       "env": {
@@ -136,9 +146,10 @@
         "NO_PROXY": "{no_proxy}",
         "no_proxy": "{no_proxy}"
       },
+      "_note_ready": "http 探活，返回 404 也算就绪——能应答就说明端口在服务。为什么不用 tcp：tcp 探活是「连上就立刻关掉」，如果关得比服务端 accept 还早，Windows 会让挂起的 AcceptEx 以 WinError 64 失败，而 asyncio 的 proactor 遇到 accept 出错会把「监听套接字」整个关掉——进程还活着、模型还在显存里，端口却没了，之后每次探活都超时，启动永远停在「starting」。注意：换成 http 只是把概率降下来，**并没有根治**。我一度以为「服务端必须先 accept 并回应，客户端才可能关闭连接」，那是错的——客户端自己会超时，服务端正忙的时候照样连上就断。2026-07-30 口型服务就是这么死的，端口开出来的同一秒就没了。真正的修法在服务端：selector 事件循环不会因为 accept 出错关掉监听套接字。口型服务见 services\\lipsync\\service.py 的 serve()，语音服务见 services\\voice\\launcher.py 的 install_selector_event_loop()。",
       "ready": {
-        "type": "tcp",
-        "port": "{voice_port}"
+        "type": "http",
+        "url": "http://127.0.0.1:{voice_port}/"
       },
       "ready_timeout": 900
     }
