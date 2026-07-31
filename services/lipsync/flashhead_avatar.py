@@ -540,6 +540,11 @@ def _aligned_reference(still_bgr, idle_frame_bgr, target, face_zoom=DEFAULT_FACE
         # part of the original it replaces.
         "crop_x": x0i,
         "crop_y": y0i,
+        # True when the crop wanted more picture than the still has. Then the
+        # framing error below is not a choice and face_zoom cannot reduce it -
+        # a smaller zoom asks for an even wider crop, which is the direction
+        # that is already unavailable. The cure is a wider reference image.
+        "crop_clamped": bool(ideal > side + 0.5),
         "scale": round(target / float(sidei), 3),
         "face_zoom": round(face_zoom, 3),
         # How much bigger the face ended up than in the clip. Roughly

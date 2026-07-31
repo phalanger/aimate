@@ -547,9 +547,25 @@ export class CharacterEditor {
       if (!response.ok) {
         throw new Error(data.error || response.status);
       }
-      status.textContent = format(this.t("mt_prepared"), {
-        frames: (data.avatar || {}).frames || 0,
-      });
+      const avatar = data.avatar || {};
+      status.textContent = format(this.t("mt_prepared"), { frames: avatar.frames || 0 });
+
+      // How much bigger the face will be the moment she starts talking. The
+      // service has always computed this and never shown it, which is how a
+      // character ended up pushing in by three quarters without anything
+      // saying so. A square crop cannot always reproduce the clip's framing -
+      // a portrait clip is the case that cannot, since the widest square is
+      // limited by its narrow side - and when it cannot, the slider above has
+      // nothing left to give.
+      const geometry = avatar.geometry || {};
+      const error = Number(geometry.framing_error_pct);
+      if (error >= 15) {
+        status.dataset.warn = "true";
+        status.textContent +=
+          " " + format(this.t(geometry.crop_clamped ? "mt_framing_clamped" : "mt_framing_push"), {
+            percent: Math.round(error),
+          });
+      }
     } catch (err) {
       status.dataset.warn = "true";
       status.textContent = this.t("err_mt_prepare") + err.message;
