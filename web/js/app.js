@@ -46,7 +46,8 @@ const state = {
   settings: null,
   client: null,
   connected: false,
-  muted: false,
+  // Set from storage in main(), so a fresh profile starts with capture off.
+  micOn: false,
   speaking: false,
   turnEnding: false,
   // Audio deltas of the last reply, kept so it can be played again without
@@ -227,17 +228,47 @@ function applyControls() {
 
   const mute = el("mute");
   const needsMic = state.audio && state.audio.running && !state.audio.micAvailable;
-  const action = needsMic ? "enable_mic" : (state.muted ? "unmute" : "mute");
+  const action = needsMic ? "enable_mic" : (state.micOn ? "mute" : "unmute");
   // One glyph for the microphone either way: which state it is in is already
   // said by the accent colouring that data-active turns on.
   //
   // The highlight means "you are not being heard", which covers muted and
-  // no-microphone alike. Reading it off state.muted alone made the third
+  // no-microphone alike. Reading it off the muted flag alone made the third
   // state indistinguishable from a live microphone in compact mode, where
   // the glyph is the same for all three and only the tooltip differs.
   mute.textContent = compact ? t("icon_mic") : t(action);
   mute.title = compact ? t(action) : "";
-  mute.dataset.active = String(needsMic || state.muted);
+  mute.dataset.active = String(needsMic || !state.micOn);
+}
+
+// Whether the user wants the microphone on. Remembered, and deliberately not
+// the same question as whether one is currently live - that is derived from
+// the engine and cannot outlast the device.
+//
+// Persisted because it survives more than the session: reconnecting used to
+// leave capture off until it was switched on by hand every time, and closing
+// the app forgot it entirely. Absent means off, which is what makes the first
+// run of all avoid asking for permission before there is any reason to.
+const MIC_KEY = "mate.mic.on";
+
+function loadMicPreference() {
+  try {
+    return window.localStorage.getItem(MIC_KEY) === "1";
+  } catch (err) {
+    return false;
+  }
+}
+
+function setMicOn(on) {
+  state.micOn = !!on;
+  try {
+    window.localStorage.setItem(MIC_KEY, state.micOn ? "1" : "0");
+  } catch (err) {
+    // Private mode or a blocked origin. The preference just will not outlive
+    // the tab, which beats refusing to change it.
+  }
+  state.audio.setMuted(!state.micOn);
+  applyControls();
 }
 
 function showNotice(key) {
@@ -887,17 +918,27 @@ async function connect() {
   setStatus("connecting", "thinking");
 
   try {
-    await state.audio.start({ microphone: false });
+    // Capture is requested only if it was on when we last left off. On a
+    // first run nothing is remembered, so connecting asks for nothing and
+    // playback and typing work straight away - which is the point of not
+    // taking the microphone up front. Once it has been turned on, permission
+    // is already granted and this reopens it without a prompt.
+    await state.audio.start({ microphone: state.micOn });
   } catch (err) {
     showError("err_mic");
     setStatus("status_error", "error");
     return;
   }
 
-  // Start without prompting for microphone permission. Playback and typed
-  // input work immediately; the microphone button asks for capture when it is
-  // actually wanted.
   el("mute").hidden = false;
+  // A microphone that was wanted but could not be opened - unplugged since
+  // last time, or permission revoked - falls back to typing and says so,
+  // rather than looking live and hearing nothing.
+  if (state.micOn && !state.audio.micAvailable) {
+    showNotice("notice_no_mic");
+  } else {
+    state.audio.setMuted(!state.micOn);
+  }
 
   state.audio.onAudioFrame = (base64) => {
     if (state.client && state.connected) {
@@ -1009,9 +1050,9 @@ async function disconnect() {
   applyCompose();
   el("notice").hidden = true;
   el("mute").hidden = false;
-  // The engine has just released the microphone, so the button has to stop
-  // offering to mute one.
-  state.muted = false;
+  // state.micOn is deliberately untouched: closing the session says nothing
+  // about whether the microphone should be on in the next one, and resetting
+  // it here is what made every reconnect start muted.
   applyControls();
   setStatus("status_idle", "idle");
 }
@@ -1050,6 +1091,9 @@ function applyStaticText() {
 async function main() {
   state.i18n = await loadJson("./i18n.json");
   applyStaticText();
+  // Before anything draws the controls, so the microphone button opens on the
+  // state it was left in rather than on the default.
+  state.micOn = loadMicPreference();
 
   try {
     state.config = await loadJson("/api/characters");
@@ -1211,6 +1255,9 @@ async function main() {
   });
 
   el("mute").addEventListener("click", () => {
+    // No device yet: ask for one. Only the first time in the browser's life
+    // does this show a permission prompt, which is the whole reason capture
+    // is not requested on connect.
     if (state.audio.running && !state.audio.micAvailable) {
       state.audio.enableMicrophone().then((available) => {
         if (!available) {
@@ -1218,15 +1265,11 @@ async function main() {
           return;
         }
         el("notice").hidden = true;
-        state.muted = false;
-        state.audio.setMuted(false);
-        applyControls();
+        setMicOn(true);
       });
       return;
     }
-    state.muted = !state.muted;
-    state.audio.setMuted(state.muted);
-    applyControls();
+    setMicOn(!state.micOn);
   });
 
   setupCollapse();
