@@ -157,7 +157,7 @@ FlashHead 快是因为它是**蒸馏过的少步模型**（`sample_steps=4`，Se
 frames_for_audio(pcm, start_index) -> [jpeg bytes]
 ```
 
-换后端 = 加一个实现了这个方法的类 + 一个独立解释器（`runtime\pythonlashhead`，
+换后端 = 加一个实现了这个方法的类 + 一个独立解释器（`runtime\python\flashhead`，
 torch 2.7.1）。**主流水线、面板、渲染器一行都不用动**——当初因为 torch 版本冲突
 把口型拆成独立进程，现在正好让替换变便宜。
 
