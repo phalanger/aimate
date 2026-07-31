@@ -159,11 +159,16 @@ fn find_root() -> Option<PathBuf> {
 
 /// The interpreter is read from the process table rather than duplicated here,
 /// so there is still one place that says how the services are launched.
+///
+/// Only {root} is substituted, not the whole variable table the supervisor
+/// understands: this one value is a path to an interpreter that ships with the
+/// project, and reimplementing the rest here would be a second, quietly
+/// diverging copy of something Python already does.
 fn python_from_services(root: &Path) -> Option<String> {
     let text = std::fs::read_to_string(root.join("scripts").join("services.json")).ok()?;
     let config: serde_json::Value = serde_json::from_str(&text).ok()?;
     let python = config.get("vars")?.get("python_s2s")?.as_str()?;
-    Some(python.to_string())
+    Some(python.replace("{root}", &root.to_string_lossy()))
 }
 
 /// Splash wording comes from the same file the page uses.
@@ -290,8 +295,17 @@ fn main() -> wry::Result<()> {
             std::process::exit(1);
         }
     };
-    let python = python_from_services(&root)
-        .unwrap_or_else(|| "python".to_string());
+    // The fallback used to be a bare "python", which relied on there being one
+    // on PATH. There no longer is: the interpreters ship with the project, so
+    // guess at the standard location instead of at the machine's.
+    let python = python_from_services(&root).unwrap_or_else(|| {
+        root.join("runtime")
+            .join("python")
+            .join("s2s")
+            .join("python.exe")
+            .to_string_lossy()
+            .into_owned()
+    });
 
     // An already-running panel is adopted rather than treated as an error, the
     // same way the supervisor does it - so launching the shell while the

@@ -82,7 +82,7 @@ I:\ai\code\mate\
 │   ├── llm_router.py           多供应商路由
 │   └── transcribe.py           参考音频转写
 ├── services\
-│   └── lipsync\                MuseTalk 服务（独立 conda 环境）
+│   └── lipsync\                MuseTalk 服务（独立解释器）
 ├── scripts\
 │   ├── supervisor.py           进程管理
 │   ├── services.json           进程表（唯一事实来源）
@@ -111,9 +111,10 @@ I:\ai\code\mate\
 那样一次更新覆盖 `panel\` 就会连角色、设置和素材一起抹掉。`web\` 是文档根，
 `assets\models` 和 `assets\media` 通过 `/assets/` 挂载出去，让浏览器仍然取得到。
 
-Python 运行环境为独立的 conda 环境 `s2s`（Python 3.11），不污染 Anaconda base。
-MuseTalk 另有一个 `musetalk` 环境，两者的 torch 与 CUDA 版本不兼容，见
-[04-packaging.md](./04-packaging.md)。
+Python 解释器一共三个，都在 `runtime\python\` 下：`s2s`（3.11，语音流水线）、
+`flashhead`（3.10，口型）、`musetalk`（3.10，口型的旧后端）。它们的 torch 与
+CUDA 版本互不兼容，只能分开装，见 [04-packaging.md](./04-packaging.md)。放在项目里
+而不是交给系统或包管理器，所以这个项目不依赖机器上任何全局 Python。
 
 ## 四、运行流程
 

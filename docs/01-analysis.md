@@ -100,6 +100,10 @@ PyTorch 在 Windows 上从 PyPI 安装默认是 CPU-only 版本，必须指定
 - 磁盘：I 盘剩余 992.6 GB
 - 已有工具链：Python 3.11.5 (Anaconda)、Node 24.14.0、Git 2.52.0、Docker、Ollama、ffmpeg
 
+> 后来 Anaconda 从这台机器上卸掉了。三个 Python 解释器整套搬进了
+> `runtime\python\`，项目不再依赖任何全局 Python，见
+> [04-packaging.md](./04-packaging.md) 第二节。
+
 驱动 610.62 远高于 CUDA 12.8 所需的 525，也满足 CUDA 13 的要求，无需升级驱动。
 
 显存分配估算：

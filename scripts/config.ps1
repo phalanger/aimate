@@ -3,15 +3,28 @@
 
 $Global:MateRoot = Split-Path -Parent $PSScriptRoot
 
-# Python interpreter of the dedicated conda environment. Using the interpreter
-# path directly avoids needing "conda activate" inside every script.
-$Global:MatePython = "D:\Apps\anaconda3\envs\s2s\python.exe"
+# Python interpreter for the voice pipeline. It lives inside the project, in
+# runtime\python\s2s, alongside the other two interpreters - see the note at
+# the top of scripts\services.json for why there are three and why they are
+# here rather than in a package manager's directory.
+$Global:MatePython = Join-Path $Global:MateRoot "runtime\python\s2s\python.exe"
 
 # Ollama serves the LLM over an OpenAI-compatible API.
 # Port 11700 rather than the default 11434: on this machine the range
 # 11428-11527 sits in the Windows excluded port list, so the default bind
 # fails with "socket access forbidden".
-$Global:OllamaExe = "C:\Users\Cytal\AppData\Local\Programs\Ollama\ollama.exe"
+# Located rather than hardcoded: the installer puts it under the user's own
+# profile, so the path differs per machine. PATH first, then the default
+# install location. Empty when Ollama is not installed, which is fine - it is
+# only needed by the local-model scripts.
+$Global:OllamaExe = ""
+$ollamaOnPath = Get-Command ollama.exe -ErrorAction SilentlyContinue
+if ($ollamaOnPath) {
+    $Global:OllamaExe = $ollamaOnPath.Source
+} else {
+    $ollamaDefault = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"
+    if (Test-Path $ollamaDefault) { $Global:OllamaExe = $ollamaDefault }
+}
 $Global:OllamaHost = "127.0.0.1:11700"
 $Global:LlmModel = "mate-qwen3-14b"
 

@@ -60,7 +60,7 @@ WebView2，而 [tauri#5042](https://github.com/tauri-apps/tauri/issues/5042)、
 
 ```powershell
 # 一个窗口开探针服务，另一个窗口开 WebView2
-D:\Apps\anaconda3\envs\s2s\python.exe spike\mic-probe\probe_server.py
+runtime\python\s2s\python.exe spike\mic-probe\probe_server.py
 cargo run --manifest-path spike\webview-mic\Cargo.toml
 ```
 
@@ -139,14 +139,21 @@ Windows 上探父进程用 `OpenProcess(SYNCHRONIZE)` 加零超时的 `WaitForSi
 
 | 组成 | 大小 |
 | --- | --- |
-| s2s conda 环境 | 5.4 GB |
-| musetalk conda 环境 | 5.8 GB |
+| s2s 解释器 | 5.4 GB |
+| flashhead 解释器 | 6.6 GB |
+| musetalk 解释器 | 5.8 GB |
 | models\（Qwen3-14B GGUF 约 11 GB + TTS 4.5 GB） | 15.5 GB |
 | musetalk\ 权重 | 7.7 GB |
 | ffmpeg | 0.3 GB |
-| **合计** | **约 35 GB** |
+| **合计** | **约 41 GB** |
 
 所以"解压双击"能做到，但不是几十 MB 那种绿色包。
+
+三个解释器现在都在 `runtime\python\` 下，是从原来的 conda 环境整套搬过来的——
+里面除了解释器本身全是 pip 装的，conda 只提供了 python、openssl、sqlite 这几样，
+Windows 上的 `python.exe` 又是按自己的位置定 `sys.prefix`，所以换个目录照样跑。
+意外的好处是自包含这件事本来就要做，这一步顺手做完了：现在整个项目不依赖机器上
+任何全局 Python。
 
 **分层方案**（本地大模型设为可选，默认用云端）：
 

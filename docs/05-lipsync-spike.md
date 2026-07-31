@@ -127,6 +127,12 @@ FlashHead 快是因为它是**蒸馏过的少步模型**（`sample_steps=4`，Se
    `False` 会被解析成 `True`（非空字符串）。只能改代码或用 API 传真正的 bool。
 5. **Pro 的权重不用下。**lite 只用 LTX VAE，`VAE_Wan` 和 `Model_Pro` 加起来 6.5 GB
    可以跳过。
+6. **`cv2.imread` 读不了中文路径。**OpenCV 自己做文件 IO，在 Windows 上走 ANSI
+   代码页，所以 `assets/media/小满.png` 直接打不开，`imread` 返回 `None`，看起来
+   像文件损坏。`np.fromfile` + `cv2.imdecode` 绕开文件名即可（写用
+   `imencode` + `tofile`）。`VideoCapture` 不受影响——它把路径交给 FFmpeg，这也
+   正是同一个角色待机视频能读、参考图读不了的原因。见 `flashhead_avatar.py`
+   的 `_imread` / `_imwrite`。
 
 ## 七、下载
 
@@ -151,7 +157,7 @@ FlashHead 快是因为它是**蒸馏过的少步模型**（`sample_steps=4`，Se
 frames_for_audio(pcm, start_index) -> [jpeg bytes]
 ```
 
-换后端 = 加一个实现了这个方法的类 + 一个独立 conda 环境（`flashhead`，
+换后端 = 加一个实现了这个方法的类 + 一个独立解释器（`runtime\pythonlashhead`，
 torch 2.7.1）。**主流水线、面板、渲染器一行都不用动**——当初因为 torch 版本冲突
 把口型拆成独立进程，现在正好让替换变便宜。
 
@@ -206,8 +212,38 @@ MuseTalk 没有删，把那一行改回 `--backend musetalk`、python 换成
 | `BORDER_REFLECT_101` | 把她自己的肩膀镜像折回画面，多出一条手臂 |
 
 所以最后是**不补**：裁剪限制在图片范围内，剩下 13.3% 的取景误差如实记在
-`info.json` 的 `framing_error_pct` 里。想彻底消掉，办法是换一张**取景稍宽**的参考
-图，而不是在代码里想办法糊过去。
+`info.json` 的 `framing_error_pct` 里。
+
+#### 后来发现：这个"误差"其实该主动要一点
+
+小满那套素材出来之后对比才看清楚。两张参考图都是 1024、都一样清楚，唯一的差别是
+待机视频的取景：
+
+| | 待机脸占比 | 模型拿到的脸 | 嘴部像素 | 取景误差 |
+| --- | --- | --- | --- | --- |
+| 小玲（拍得近） | 0.357 | 205 px | 205×93 | 13.3% |
+| 小满（拍得宽） | 0.285 | 148 px | 147×67 | 0.9% |
+
+**光是取景，嘴部像素差了将近一倍。**参考图会被裁成和待机片段一样的构图，所以待机
+拍得宽，参考图就被一起拖下来——小满那张原图的脸有 294 px，最后只用到 148 px。
+
+而小玲那 13.3% 的"误差"恰恰是她嘴更清楚的原因：她裁到 1024 就撞边了，参考脸比待机
+脸大了 13%。**那个不对齐没人察觉，另一边那张糊掉的嘴一眼就看出来了。**
+
+所以对齐目标从"完全一致"改成"故意大一点"，由 `DEFAULT_FACE_ZOOM` 控制（现在
+1.2）。实测：
+
+```text
+xiaoman     zoom 1.0  crop 1024  face 147 px  error  +0.9%
+            zoom 1.2  crop  861  face 175 px  error +20.0%
+xiaolingfh  zoom 1.0  crop 1024  face 207 px  error +13.3%
+            zoom 1.2  crop  967  face 219 px  error +20.0%
+```
+
+`zoom 1.0` 精确复现改动前两个缓存里的数字，所以这个改动只影响新的默认值。位置仍然
+对齐，只有大小略大，看起来是轻微推近而不是跳切。
+
+要更进一步只能从源头解决：待机视频拍得更近。代码这边已经没有余量了。
 
 ### 音频切片
 
