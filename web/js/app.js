@@ -230,9 +230,14 @@ function applyControls() {
   const action = needsMic ? "enable_mic" : (state.muted ? "unmute" : "mute");
   // One glyph for the microphone either way: which state it is in is already
   // said by the accent colouring that data-active turns on.
+  //
+  // The highlight means "you are not being heard", which covers muted and
+  // no-microphone alike. Reading it off state.muted alone made the third
+  // state indistinguishable from a live microphone in compact mode, where
+  // the glyph is the same for all three and only the tooltip differs.
   mute.textContent = compact ? t("icon_mic") : t(action);
   mute.title = compact ? t(action) : "";
-  mute.dataset.active = String(state.muted);
+  mute.dataset.active = String(needsMic || state.muted);
 }
 
 function showNotice(key) {
