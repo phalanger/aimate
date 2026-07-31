@@ -19,11 +19,14 @@ Deliberately stdlib-only and driven entirely by services.json. The eventual
 desktop shell will need exactly this process table, and a data file is
 something a Rust supervisor can read too, where a pile of PowerShell is not.
 
-Usage
-    python supervisor.py                 start everything
-    python supervisor.py --only voice    just one, with its dependencies
-    python supervisor.py --skip lipsync  everything else
-    python supervisor.py --list          show the process table and exit
+Usage - there is no Python on PATH by design, so name the bundled one, or use
+the start-*.ps1 wrappers which already know where it is:
+
+    runtime\\python\\s2s\\python.exe scripts\\supervisor.py
+                                         start everything
+    ... supervisor.py --only voice       just one, with its dependencies
+    ... supervisor.py --skip lipsync     everything else
+    ... supervisor.py --list             show the process table and exit
 """
 
 import argparse
@@ -145,6 +148,40 @@ class Service:
 
     def tag(self):
         return paint("[%-8s]" % self.id, self.colour)
+
+
+CERT_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_DIR")
+
+
+def drop_dead_cert_vars(environment):
+    """Unset certificate bundle variables that point at something gone.
+
+    These name a CA bundle for every HTTPS client in the process. Python
+    package managers like to set them to a file inside their own installation,
+    and when that installation is removed the variable outlives it - inherited
+    by any shell opened before the removal, and from there by everything
+    launched out of that shell.
+
+    A stale one is worse than none at all. ssl.create_default_context opens the
+    file eagerly and the error carries no filename:
+
+        FileNotFoundError: [Errno 2] No such file or directory
+
+    which is raised while merely constructing an HTTP client, long before any
+    request. This took down the voice pipeline on 2026-07-30, after Anaconda
+    was uninstalled and SSL_CERT_FILE still pointed into it. Dropping the
+    variable falls back to the certifi bundle inside each service's own
+    interpreter, which is what we want anyway.
+    """
+    for name in CERT_VARS:
+        value = environment.get(name)
+        if value and not os.path.exists(value):
+            print(
+                "dropping %s: it points at %s, which does not exist" % (name, value),
+                flush=True,
+            )
+            environment.pop(name, None)
+    return environment
 
 
 def expand(text, variables, extra=None):
@@ -278,6 +315,21 @@ def probe(check, timeout=1.5):
         # one badly timed probe silently takes the service off its port for
         # good, and every later probe then times out against a process that
         # looks alive. This cost a startup that hung at "starting" forever.
+        #
+        # Do not mistake this for a cure. It narrows the window; it cannot
+        # close it, because nothing on this side can tell when the server has
+        # accepted. It was measured recurring afterwards, on a service that
+        # had simply got faster to start. So: never use a tcp check against an
+        # asyncio server; use an http one. This check is for servers that do
+        # their own blocking accept, where dropping the connection is harmless.
+        #
+        # An http check is not a cure either, and this comment used to claim it
+        # was - "the server has to accept and answer before the client can
+        # close". It does not: the client gives up on its own timeout, and a
+        # server busy enough to be slow at accepting is exactly the server
+        # everything is probing. The lip-sync service lost its port that way on
+        # 2026-07-30. The only real fix is on the server, which now serves on a
+        # selector event loop - see services/lipsync/service.py serve().
         try:
             connection.shutdown(socket.SHUT_WR)
         except OSError:
@@ -377,7 +429,7 @@ class Supervisor:
         )
         service.log.write("\n=== started %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
 
-        environment = dict(os.environ)
+        environment = drop_dead_cert_vars(dict(os.environ))
         # An entry that expands to nothing is left alone rather than set empty:
         # an empty HTTP_PROXY means "no proxy" and would override one the
         # launching shell had already provided.

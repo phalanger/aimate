@@ -1,6 +1,6 @@
 """Real-time lip-sync service.
 
-Runs in its own conda environment ("musetalk"): MuseTalk pins torch 2.0.1 with
+Runs on its own interpreter (runtime/python/musetalk): MuseTalk pins torch 2.0.1 with
 CUDA 11.8, while the voice pipeline runs torch 2.9 with CUDA 12.8. They cannot
 share an interpreter, so they talk over HTTP and a WebSocket instead.
 
@@ -119,7 +119,7 @@ def backend(state):
 
     Imported on demand: avatar.py pulls in MuseTalk at module level and
     flashhead_avatar.py pulls in the FlashHead checkout, and neither import can
-    succeed in the other's conda environment.
+    succeed on the other's interpreter.
     """
     if state.args.backend == "flashhead":
         import flashhead_avatar
@@ -233,7 +233,16 @@ def build_app(state):
         avatar_id = websocket.query_params.get("avatar")
         avatar = state.avatars.get(avatar_id)
         if avatar is None:
-            await websocket.send_json({"type": "error", "message": "unknown avatar: %s" % avatar_id})
+            # Coded, not just described: the panel turns this one into "the
+            # materials for this character have not been prepared", which is
+            # a different instruction from "the service is not running".
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "unknown_avatar",
+                    "message": "unknown avatar: %s" % avatar_id,
+                }
+            )
             await websocket.close()
             return
 
@@ -280,7 +289,12 @@ def restore_cached_avatars(state):
             # are not interchangeable. Anything built by the other one is
             # skipped rather than half-loaded. (MuseTalk's caches predate the
             # field, so a missing backend means musetalk.)
-            if info.get("backend", "musetalk") != wanted:
+            built_by = info.get("backend", "musetalk")
+            if built_by != wanted:
+                # Said out loud. Skipping in silence leaves a character whose
+                # avatar simply is not there, with nothing in the log to say
+                # why or what to do about it.
+                print("skipping avatar '%s': prepared for %s, needs rebuilding" % (name, built_by))
                 continue
             if wanted == "flashhead":
                 avatar = Avatar(
@@ -510,7 +524,48 @@ def main():
 
     import uvicorn
 
-    uvicorn.run(build_app(STATE), host=args.host, port=args.port, log_level="warning")
+    serve(build_app(STATE), args.host, args.port)
+
+
+def serve(app, host, port):
+    """Run the app on a selector event loop, never the proactor one.
+
+    Windows defaults to asyncio's proactor loop, and uvicorn hardcodes that
+    choice rather than reading the global policy. The proactor loop cannot
+    survive a failed accept: when a client connects and drops before the
+    pending AcceptEx completes, the completion fails - WinError 64, "the
+    specified network name is no longer available" - and proactor_events.py
+    responds by closing the *listening* socket. The process stays up with the
+    models still in VRAM, but the port is gone for good, so every later probe
+    times out and the service sits at "starting" forever. That is what happened
+    here on 2026-07-30: the listener died in the same second it opened.
+
+    A busy loop is what makes this likely, because a pending accept only fails
+    if the connection is gone before the loop collects it - and this loop is
+    busy exactly when everything is probing it. The selector loop treats the
+    same event as nothing: a dropped connection raises ConnectionAbortedError,
+    which it swallows, and any other accept error propagates to the loop's
+    exception handler with the listening socket left open.
+
+    Reproduced both ways before changing this, with a hammer of reset-on-
+    connect clients against a deliberately blocked loop: proactor lost the
+    port on the first failure, selector kept serving. Nothing here needs what
+    the proactor loop is for - asyncio subprocesses; the blocking work goes
+    through asyncio.to_thread.
+    """
+    import uvicorn
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    # Built here rather than asked of uvicorn: its loop choice is made by a
+    # factory that returns the proactor loop on Windows, and running serve()
+    # on a loop we own is the one way that cannot be overridden underneath us.
+    loop = asyncio.SelectorEventLoop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(server.serve())
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":
