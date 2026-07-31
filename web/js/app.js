@@ -990,6 +990,10 @@ async function connect() {
   if (!el("compose").hidden) {
     el("compose-input").focus();
   }
+  // The microphone button reflects a state that just changed, and connecting
+  // was the only transition that never refreshed it - so after reconnecting
+  // it still showed whatever the previous session ended on.
+  applyControls();
   setStatus("status_ready", "ready");
 }
 
@@ -1005,6 +1009,10 @@ async function disconnect() {
   applyCompose();
   el("notice").hidden = true;
   el("mute").hidden = false;
+  // The engine has just released the microphone, so the button has to stop
+  // offering to mute one.
+  state.muted = false;
+  applyControls();
   setStatus("status_idle", "idle");
 }
 

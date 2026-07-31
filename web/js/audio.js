@@ -63,15 +63,24 @@ export class AudioEngine {
     this.onEnvelope = null;
     this.onDrained = null;
     this.running = false;
-    // False when there is no microphone, or the user denied access. Playback
-    // still works, so the session degrades to typing instead of failing.
-    this.micAvailable = false;
 
     // When a renderer generates video from the reply audio, the picture is
     // necessarily a beat behind the sound. Holding playback until the first
     // frames exist trades a little latency for lips that match the voice.
     this.holding = false;
     this.held = [];
+  }
+
+  // Whether a microphone is live right now.
+  //
+  // Derived rather than remembered. It used to be a field that start(), stop()
+  // and _startMicrophone() each had to keep true, and the moment capture
+  // became something you switch on mid-session, they stopped agreeing: stop()
+  // released the stream but left the field set, so the next session believed
+  // it had a microphone it had already thrown away and offered no way to ask
+  // for another. A value read from the node cannot go stale.
+  get micAvailable() {
+    return this.micNode !== null;
   }
 
   async start(options = {}) {
@@ -105,8 +114,6 @@ export class AudioEngine {
   }
 
   async _startMicrophone() {
-    this.micAvailable = false;
-
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return;
     }
@@ -126,32 +133,19 @@ export class AudioEngine {
         video: false,
       });
     } catch (err) {
-      // No device, or permission refused. Text input remains usable.
+      // No device and permission refused have different cures, and reporting
+      // both as "no microphone found" sends the one user who can fix it
+      // looking for hardware they already have. Nothing is stored - the name
+      // goes to the console and the absence of micNode says the rest.
+      console.warn("[audio] microphone unavailable:", err && err.name, err && err.message);
       return;
     }
 
-    // Asking for echo cancellation is not the same as getting it, and the
-    // difference is invisible until she starts answering her own sentences:
-    // her voice reaches the microphone, the server's VAD calls it a barge-in,
-    // and the reply being spoken is cancelled. Recorded here because the only
-    // other evidence is in the voice log, several layers away, where it looks
-    // like the user said something they never said.
+    // Asking for echo cancellation is not the same as being given it, and the
+    // difference only shows up as her answering her own sentences.
     const track = this.stream.getAudioTracks()[0];
-    this.micSettings = track ? track.getSettings() : {};
-    this.echoCancelled = this.micSettings.echoCancellation !== false;
-    console.log(
-      "[audio] microphone: device=%s echoCancellation=%s noiseSuppression=%s autoGainControl=%s",
-      this.micSettings.deviceId ? this.micSettings.deviceId.slice(0, 8) : "?",
-      this.micSettings.echoCancellation,
-      this.micSettings.noiseSuppression,
-      this.micSettings.autoGainControl
-    );
-    if (!this.echoCancelled) {
-      console.warn(
-        "[audio] echo cancellation is NOT active - she will hear herself and " +
-          "cut her own replies short"
-      );
-    }
+    const settings = track ? track.getSettings() : {};
+    console.log("[audio] microphone echoCancellation =", settings.echoCancellation);
 
     this.sourceNode = this.context.createMediaStreamSource(this.stream);
     this.micNode = new AudioWorkletNode(this.context, "mic-capture", {
@@ -179,7 +173,6 @@ export class AudioEngine {
       this.onAudioFrame(bytesToBase64(new Uint8Array(pcm.buffer)));
     };
     this.sourceNode.connect(this.micNode);
-    this.micAvailable = true;
   }
 
   // A MediaStream carrying only her voice - not the microphone, and not
@@ -301,17 +294,6 @@ export class AudioEngine {
       }
       this.stream = null;
     }
-    // The tracks above are stopped, so the microphone is gone with them. This
-    // has to say so, because capture is now acquired on demand and this flag
-    // is the only thing that decides whether it can be acquired again: left
-    // set, the next session sees a microphone it no longer has, the button
-    // goes back to offering mute instead of enable, and enableMicrophone()
-    // returns early on the same stale value. There is then no way back short
-    // of reloading the page. It did not matter while start() always called
-    // _startMicrophone(), which cleared this on its first line.
-    this.micAvailable = false;
-    this.micSettings = null;
-    this.echoCancelled = false;
     if (this.context) {
       await this.context.close();
       this.context = null;
