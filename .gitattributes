@@ -1,0 +1,7 @@
+# Normalise line endings, so a clone on another platform does not show every
+# file as modified. Git stores LF and checks out whatever the platform wants.
+#
+# Added after a history rewrite left thirty files looking modified when their
+# content was byte-identical: the working copy had LF and core.autocrlf wanted
+# CRLF, which git reports as a difference but git diff does not show.
+* text=auto
