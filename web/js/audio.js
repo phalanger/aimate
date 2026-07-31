@@ -301,6 +301,17 @@ export class AudioEngine {
       }
       this.stream = null;
     }
+    // The tracks above are stopped, so the microphone is gone with them. This
+    // has to say so, because capture is now acquired on demand and this flag
+    // is the only thing that decides whether it can be acquired again: left
+    // set, the next session sees a microphone it no longer has, the button
+    // goes back to offering mute instead of enable, and enableMicrophone()
+    // returns early on the same stale value. There is then no way back short
+    // of reloading the page. It did not matter while start() always called
+    // _startMicrophone(), which cleared this on its first line.
+    this.micAvailable = false;
+    this.micSettings = null;
+    this.echoCancelled = false;
     if (this.context) {
       await this.context.close();
       this.context = null;
