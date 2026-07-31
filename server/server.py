@@ -1361,6 +1361,23 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                 raise PanelError(404, "no such file: " + value)
             payload[field] = resolved.replace("\\", "/")
 
+        # How tightly the still is cropped around the face. Checked here
+        # because it arrives from a browser: the service would take any number
+        # and a silly one produces a crop of a few pixels enlarged to fill the
+        # frame, which fails somewhere far less obvious. The upper bound is
+        # where a 1024 still stops having pixels to give - past it the crop is
+        # being enlarged rather than reduced, so the detail is invented.
+        if payload.get("face_zoom") not in (None, ""):
+            try:
+                zoom = float(payload["face_zoom"])
+            except (TypeError, ValueError):
+                raise PanelError(400, "face_zoom must be a number")
+            if not 1.0 <= zoom <= 2.5:
+                raise PanelError(400, "face_zoom must be between 1.0 and 2.5")
+            payload["face_zoom"] = zoom
+        else:
+            payload.pop("face_zoom", None)
+
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             MUSETALK_URL + "/prepare",

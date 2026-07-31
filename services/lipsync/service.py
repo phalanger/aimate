@@ -220,6 +220,7 @@ def build_app(state):
                     video_path,
                     payload.get("bbox_shift", 0),
                     payload.get("idle_video", ""),
+                    payload.get("face_zoom"),
                 )
             except Exception as exc:
                 traceback.print_exc()
@@ -348,11 +349,16 @@ def restore_cached_avatars(state):
             print("could not restore avatar '%s': %s" % (name, exc))
 
 
-def prepare_avatar(state, avatar_id, video_path, bbox_shift, idle_video=""):
+def prepare_avatar(state, avatar_id, video_path, bbox_shift, idle_video="", face_zoom=None):
     Avatar = backend(state).Avatar
     if state.args.backend == "flashhead":
-        avatar = Avatar(state, avatar_id, video_path, bbox_shift, idle_video=idle_video)
+        # face_zoom None means "use the module default"; the Avatar records
+        # whatever it settles on, and rebuilds the cache when it changes.
+        avatar = Avatar(
+            state, avatar_id, video_path, bbox_shift, idle_video=idle_video, face_zoom=face_zoom
+        )
     else:
+        # MuseTalk generates from a clip and does no framing of its own.
         avatar = Avatar(state, avatar_id, video_path, bbox_shift)
     avatar.prepare()
     return avatar

@@ -5,6 +5,11 @@
 // and filling in the reference text live in the same dialog rather than being
 // separate chores.
 
+// Must match DEFAULT_FACE_ZOOM in services/lipsync/flashhead_avatar.py. Only
+// used to fill the control for a character saved before the setting existed;
+// the service still decides for itself when the field is absent.
+const DEFAULT_FACE_ZOOM = 1.2;
+
 function el(id) {
   const node = document.getElementById(id);
   if (!node) {
@@ -92,6 +97,10 @@ export class CharacterEditor {
       this._showLipsyncWarning();
     });
     el("ed-mt-id").addEventListener("input", () => this._captureAvatar());
+    el("ed-mt-zoom").addEventListener("input", () => {
+      this._showZoom();
+      this._captureAvatar();
+    });
     el("ed-rescan").addEventListener("click", () => this._loadAssets());
 
     el("ed-rules").addEventListener("click", () => {
@@ -137,6 +146,7 @@ export class CharacterEditor {
     el("lb-mt-idle").textContent = t("lb_mt_idle");
     el("lb-mt-video").textContent = t("lb_mt_video");
     el("lb-mt-id").textContent = t("lb_mt_id");
+    el("lb-mt-zoom").textContent = t("lb_mt_zoom");
     el("lb-mt-note").textContent = t("lb_mt_note");
     el("ed-mt-prepare").textContent = t("btn_mt_prepare");
     el("ed-rescan").textContent = t("btn_rescan");
@@ -176,8 +186,11 @@ export class CharacterEditor {
       avatar_id: avatar.avatar_id || "",
       idle_video: avatar.idle_video || "",
       talk_video: avatar.talk_video || "",
+      face_zoom: avatar.face_zoom || DEFAULT_FACE_ZOOM,
     };
     el("ed-mt-id").value = this.avatar.avatar_id;
+    el("ed-mt-zoom").value = String(this.avatar.face_zoom || DEFAULT_FACE_ZOOM);
+    this._showZoom();
     // Options come from the folder scan; selecting a value before the options
     // exist would silently reset it to empty.
     await this._loadAssets();
@@ -319,6 +332,7 @@ export class CharacterEditor {
     if (this.avatar.type === "musetalk") {
       this.avatar.idle_video = el("ed-mt-idle").value;
       this.avatar.talk_video = el("ed-mt-video").value;
+      this.avatar.face_zoom = Number(el("ed-mt-zoom").value) || DEFAULT_FACE_ZOOM;
     } else {
       this.avatar.idle_video = el("ed-idle-video").value;
       this.avatar.talk_video = el("ed-talk-video").value;
@@ -418,6 +432,19 @@ export class CharacterEditor {
     audio.play().catch(() => {});
   }
 
+  // The number alone means little, so the readout says what it does to the
+  // picture. Changing it does not take effect until the avatar is prepared
+  // again - the crop is baked into the cache - and saying so here saves the
+  // "I moved it and nothing happened" round trip.
+  _showZoom() {
+    const zoom = Number(el("ed-mt-zoom").value) || DEFAULT_FACE_ZOOM;
+    const key = zoom <= 1.15 ? "mt_zoom_wide" : zoom >= 1.7 ? "mt_zoom_tight" : "mt_zoom_mid";
+    el("ed-mt-zoom-value").textContent = format(this.t("mt_zoom_value"), {
+      zoom: zoom.toFixed(1),
+      hint: this.t(key),
+    });
+  }
+
   // Preparation walks every frame doing face detection and VAE encoding, so
   // it takes a minute or two. It only happens once per avatar - after that the
   // cache on disk is reused.
@@ -513,6 +540,7 @@ export class CharacterEditor {
           avatar_id: avatarId,
           video_path: video,
           idle_video: idle,
+          face_zoom: Number(el("ed-mt-zoom").value) || DEFAULT_FACE_ZOOM,
         }),
       });
       const data = await response.json();
