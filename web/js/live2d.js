@@ -78,6 +78,8 @@ export class Live2DStage {
     this.offsetY = 0.12;
 
     this._onResize = this._onResize.bind(this);
+    // Set in load(); named here so dispose() before a load is still safe.
+    this._observer = null;
   }
 
   async load(modelPath) {
@@ -113,12 +115,34 @@ export class Live2DStage {
     this._bindViewControls();
     window.addEventListener("resize", this._onResize);
 
+    // The stage also changes size without the window doing so - showing or
+    // hiding the side panel takes width from it - and PIXI's resizeTo only
+    // re-reads its target on a window resize, so neither the renderer nor the
+    // figure's placement was updated and the model came out mis-scaled.
+    //
+    // The parent is watched rather than the canvas: autoDensity means PIXI
+    // writes the canvas's own style, so observing that would react to its own
+    // output. The parent's size comes from layout alone.
+    const box = this.canvas.parentElement;
+    this._observer =
+      box && typeof ResizeObserver === "function" ? new ResizeObserver(this._onResize) : null;
+    if (this._observer) {
+      this._observer.observe(box);
+    }
+
     // Drive the mouth every frame, after the model's own update has run so
     // idle motions do not overwrite the value.
     this.app.ticker.add(() => this._tick());
   }
 
   _onResize() {
+    // Two steps, and the first is easy to miss: resizeTo only re-measures on
+    // PIXI's own window listener, so a stage that changed for any other
+    // reason has to be asked. _fit alone would then re-place the figure
+    // inside a renderer that is still the old size.
+    if (this.app) {
+      this.app.resize();
+    }
     this._fit();
   }
 
@@ -130,6 +154,12 @@ export class Live2DStage {
     }
     const width = this.app.renderer.width / this.app.renderer.resolution;
     const height = this.app.renderer.height / this.app.renderer.resolution;
+    // Laid out to nothing - hidden, or not measured yet. Scaling to that zero
+    // would shrink the figure away, and it would stay away until something
+    // else resized; the observer calls back once there is a box.
+    if (!width || !height) {
+      return;
+    }
     const base = height / this.model.internalModel.height;
 
     this.model.scale.set(base * this.zoom);
@@ -293,6 +323,10 @@ export class Live2DStage {
   dispose() {
     this.disposed = true;
     window.removeEventListener("resize", this._onResize);
+    if (this._observer) {
+      this._observer.disconnect();
+      this._observer = null;
+    }
     if (this.model) {
       this.model.destroy();
       this.model = null;
