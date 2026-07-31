@@ -300,7 +300,7 @@ PY
   fi
 fi
 
-for name in characters voices providers; do
+for name in characters voices providers settings; do
   live="$ROOT/config/$name.json"
   template="$ROOT/config/$name.example.json"
   if [[ -f "$live" ]]; then

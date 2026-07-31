@@ -285,7 +285,7 @@
         {
           "key": "llm_proxy",
           "type": "text",
-          "value": "http://127.0.0.1:2333",
+          "value": "",
           "label": "云端模型的代理",
           "help": "只用在调用云端大模型上（Kimi、GLM、DeepSeek、硅基、Grok）。本机之间的通信不走代理。留空则沿用启动时环境里的代理设置。\n\n为什么需要它：代理的环境变量通常只在终端会话里有，双击 exe 启动时拿不到，于是调用云端模型会一路超时——表现为语音服务一直启动不完。用 Ollama 本地模型的话这一项可以留空。"
         },
@@ -382,5 +382,6 @@
       ]
     }
   ],
-  "_links": "type 为 links 的项显示为一组外部链接，只读，不会写回。"
+  "_links": "type 为 links 的项显示为一组外部链接，只读，不会写回。",
+  "_comment_example": "This is the tracked template. The live file config/settings.json is created from it on first run and is gitignored, so your own values never land in a commit. New settings added here are merged into the live file on startup, keeping the values already there."
 }

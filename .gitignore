@@ -39,10 +39,19 @@
 # would land in every commit you make. The .example.json copies are tracked;
 # install.ps1 seeds the real ones from them on a fresh clone.
 #
-# settings.json stays tracked deliberately - it is the list of what is
-# adjustable, defaults included, and the panel reads its shape from there.
+# settings.json used to stay tracked, on the grounds that it is the list of
+# what is adjustable and the panel renders itself from it. But the panel also
+# writes your values back into that same file, so every slider you moved turned
+# up as a modification to a tracked file - and the value shipped for the cloud
+# proxy was one machine's loopback address, useful to nobody else.
+#
+# It is now created from config/settings.example.json on first run. New
+# settings added to the template are merged into the live file on startup,
+# values already there untouched, so untracking it does not mean updates stop
+# arriving. See sync_settings_from_template in server/server.py.
 /config/characters.json
 /config/voices.json
+/config/settings.json
 
 # Live2D Cubism Core is proprietary. Its own header calls it "Redistributable
 # Code", but redistribution is governed by an agreement this project has not

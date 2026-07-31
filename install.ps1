@@ -334,7 +334,7 @@ if (Test-Path $DefaultVoice) {
 
 # Copied, never overwritten: these are yours once they exist, and none of them
 # is tracked by git.
-foreach ($name in @("characters", "voices", "providers")) {
+foreach ($name in @("characters", "voices", "providers", "settings")) {
     $live = Join-Path $Root ("config\{0}.json" -f $name)
     $template = Join-Path $Root ("config\{0}.example.json" -f $name)
     if (Test-Path $live) {

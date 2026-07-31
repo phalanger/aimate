@@ -56,6 +56,88 @@ LOOPBACK = "127.0.0.1"
 ALL_INTERFACES = "0.0.0.0"
 
 
+def sync_settings_from_template(config_dir):
+    """Create or top up the live settings file from the tracked template.
+
+    settings.json is not tracked, because the panel writes the user's values
+    back into it - every slider moved would otherwise show up as a change to a
+    repository file, and the value shipped for the cloud proxy was one
+    machine's loopback address.
+
+    Untracking a file the UI renders itself from would normally mean that a
+    setting added later never reaches anyone who already has a copy: their file
+    simply lacks the entry and the control never appears. So the template is
+    merged in on every start. Anything present in the template and missing
+    locally is added; anything already local is left exactly as it is,
+    including its value. Nothing is ever removed, so a stale entry from an
+    older version survives an upgrade rather than being silently dropped.
+
+    Called before the first read of settings.json, so a fresh clone gets a
+    complete file rather than falling back to whatever each reader's defaults
+    happen to be - and there are four of those, in three languages.
+    """
+    template_path = os.path.join(config_dir, "settings.example.json")
+    live_path = os.path.join(config_dir, "settings.json")
+    if not os.path.exists(template_path):
+        return
+
+    try:
+        with open(template_path, "r", encoding="utf-8") as handle:
+            template = json.load(handle)
+    except (OSError, ValueError) as exc:
+        print("settings template unreadable, leaving settings alone: %s" % exc)
+        return
+
+    if not os.path.exists(live_path):
+        with open(live_path, "w", encoding="utf-8") as handle:
+            json.dump(template, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        print("Created config/settings.json from the template")
+        return
+
+    try:
+        with open(live_path, "r", encoding="utf-8") as handle:
+            live = json.load(handle)
+    except (OSError, ValueError) as exc:
+        # Someone's edited file that no longer parses. Replacing it would throw
+        # away their settings; leaving it alone lets the readers fall back to
+        # their defaults and lets them fix the file.
+        print("config/settings.json is not valid JSON, not touching it: %s" % exc)
+        return
+
+    added = []
+    groups = live.setdefault("groups", [])
+    by_id = {group.get("id"): group for group in groups}
+    for source in template.get("groups", []):
+        target = by_id.get(source.get("id"))
+        if target is None:
+            groups.append(source)
+            added.append(source.get("id") + " (group)")
+            continue
+        items = target.setdefault("items", [])
+        known = {item.get("key") for item in items}
+        for item in source.get("items", []):
+            if item.get("key") not in known:
+                items.append(item)
+                added.append(item.get("key"))
+
+    # Descriptive text belongs to the template: it is documentation, and a
+    # correction to it should reach everyone. Values are the user's; keys are
+    # matched above and never overwritten here.
+    for key in ("_comment", "_depends", "_links"):
+        if key in template:
+            live[key] = template[key]
+
+    if not added:
+        return
+    temp = live_path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(live, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(temp, live_path)
+    print("Added %d new setting(s) from the template: %s" % (len(added), ", ".join(added)))
+
+
 def read_lan_setting(config_dir):
     """Whether the user opted into serving the whole network.
 
@@ -1384,6 +1466,9 @@ def main():
 
     PATHS = Paths(args.root)
     STORE = llm_router.ProviderStore(PATHS.providers)
+
+    # Before anything reads settings, including the line below.
+    sync_settings_from_template(PATHS.config)
 
     host = args.host
     if host is None:
