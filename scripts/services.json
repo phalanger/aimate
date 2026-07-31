@@ -16,6 +16,8 @@
     "python_s2s": "{root}\\runtime\\python\\s2s\\python.exe",
     "python_musetalk": "{root}\\runtime\\python\\musetalk\\python.exe",
     "python_flashhead": "{root}\\runtime\\python\\flashhead\\python.exe",
+    "bin_dir": "{root}\\runtime\\bin",
+    "path_sep": ";",
     "ollama_host": "127.0.0.1:11700",
     "panel_port": "8900",
     "voice_port": "8765",
@@ -24,6 +26,15 @@
     "ref_audio": "{root}\\assets\\voices\\default.wav",
     "ref_text": "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes.",
     "no_proxy": "127.0.0.1,localhost,::1"
+  },
+  "vars_posix": {
+    "python_s2s": "{root}/runtime/python/s2s/bin/python",
+    "python_musetalk": "{root}/runtime/python/musetalk/bin/python",
+    "python_flashhead": "{root}/runtime/python/flashhead/bin/python",
+    "bin_dir": "{root}/runtime/bin",
+    "path_sep": ":",
+    "tts_model": "{root}/runtime/models/qwen3-tts-base",
+    "ref_audio": "{root}/assets/voices/default.wav"
   },
   "services": [
     {
@@ -70,7 +81,7 @@
       ],
       "cwd": "{root}",
       "env": {
-        "PATH": "{root}\\runtime\\bin;{PATH}"
+        "PATH": "{bin_dir}{path_sep}{PATH}"
       },
       "ready": {
         "type": "http",

@@ -294,12 +294,41 @@ def install_selector_event_loop():
     Config.get_loop_factory = lambda self: asyncio.SelectorEventLoop
 
 
+def install_silero_cache_redirect():
+    """Load silero-vad from torch hub cache without asking GitHub first.
+
+    torch.hub.load("snakers4/silero-vad", ...) checks GitHub to decide whether
+    the default branch is main or master before it looks at the local cache.
+    That makes a correctly preloaded WSL install still block on GitHub during
+    voice startup. install.sh preloads the repository to the name torch hub
+    uses for master, so route this one call to source="local".
+    """
+    from pathlib import Path
+
+    import torch
+
+    original = torch.hub.load
+
+    def load(repo_or_dir, model, *args, **kwargs):
+        if repo_or_dir == "snakers4/silero-vad":
+            cached = Path(torch.hub.get_dir()) / "snakers4_silero-vad_master"
+            if cached.exists():
+                kwargs = dict(kwargs)
+                kwargs.pop("skip_validation", None)
+                kwargs["source"] = "local"
+                return original(str(cached), model, *args, **kwargs)
+        return original(repo_or_dir, model, *args, **kwargs)
+
+    torch.hub.load = load
+
+
 def main():
     transcripts = Transcripts(VOICES_PATH)
     sys.argv = align_launch_args(sys.argv, transcripts)
     install(transcripts)
     install_single_pass_stt()
     install_selector_event_loop()
+    install_silero_cache_redirect()
 
     from speech_to_speech import s2s_pipeline
 

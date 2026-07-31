@@ -133,6 +133,7 @@ mate\
 | [docs/05-lipsync-spike.md](docs/05-lipsync-spike.md) | FlashHead 和 MuseTalk 的对比数据 |
 | [docs/06-settings-ui.md](docs/06-settings-ui.md) | 设置项是怎么由数据驱动的 |
 | [docs/07-voice-library.md](docs/07-voice-library.md) | 音色库，以及参考文本必须和音频对齐的原因 |
+| [docs/08-wsl-deployment.md](docs/08-wsl-deployment.md) | WSL / Debian 部署记录 |
 
 ## 已知的几个坑
 

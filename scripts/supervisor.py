@@ -200,6 +200,8 @@ def expand(text, variables, extra=None):
                 out = out.replace("{" + key + "}", str(value))
         if out == before:
             break
+    if os.name != "nt":
+        out = out.replace("\\", "/")
     return out
 
 
@@ -278,6 +280,7 @@ def load_services():
         config = json.load(handle)
 
     variables = dict(config.get("vars", {}))
+    variables.update(config.get("vars_nt" if os.name == "nt" else "vars_posix", {}))
     variables["root"] = ROOT
     variables["bind"] = "0.0.0.0" if read_lan_setting() else "127.0.0.1"
     # Only the panel reaches the public internet, and only to call whichever
