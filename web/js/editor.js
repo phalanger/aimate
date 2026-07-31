@@ -54,6 +54,8 @@ export class CharacterEditor {
     this.config = null;
     this.editingId = null;
     this.voices = [];
+    // Learned from the server with the voice list; see _loadVoices.
+    this.cloneMode = "icl";
     this.assets = {};
 
     this._bind();
@@ -332,6 +334,11 @@ export class CharacterEditor {
       const response = await fetch("/api/voicepacks", { cache: "no-store" });
       const data = await response.json();
       this.voices = data.voices || [];
+      // Same endpoint, same reason as in the voice library: whether a missing
+      // transcript is worth flagging depends on the pipeline's cloning mode.
+      // Default to the mode that needs one, so a failed fetch over-warns
+      // rather than staying quiet about a real problem.
+      this.cloneMode = data.clone_mode || "icl";
     } catch (err) {
       this.voices = [];
     }
@@ -389,11 +396,13 @@ export class CharacterEditor {
       return;
     }
     // Flagged rather than blocked: it still speaks without a transcript, just
-    // less like the sample.
-    note.dataset.warn = String(!voice.ref_text);
-    note.textContent = voice.ref_text
-      ? format(this.t("voice_meta"), { duration: voice.duration })
-      : format(this.t("voice_meta_notext"), { duration: voice.duration });
+    // less like the sample. In xvec_only mode not even that - the transcript
+    // never reaches the model - so there is nothing to flag.
+    const wantsText = this.cloneMode !== "xvec_only" && !voice.ref_text;
+    note.dataset.warn = String(wantsText);
+    note.textContent = wantsText
+      ? format(this.t("voice_meta_notext"), { duration: voice.duration })
+      : format(this.t("voice_meta"), { duration: voice.duration });
   }
 
   _play() {

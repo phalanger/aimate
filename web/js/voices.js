@@ -36,6 +36,10 @@ export class VoiceLibrary {
     this.t = options.translate;
     this.onChanged = options.onChanged;
     this.packs = [];
+    // Which cloning mode the pipeline runs in, learned from the server on
+    // load. Assume the one that needs a transcript until told otherwise, so a
+    // failed load never hides a field that turns out to be required.
+    this.cloneMode = "icl";
     // The clip cut but not yet saved as a voice. Kept here so the transcribe
     // and save steps know what they are working on.
     this.pending = null;
@@ -63,7 +67,8 @@ export class VoiceLibrary {
     el("voices-title").textContent = t("voices_title");
     el("lb-voice-list").textContent = t("lb_voice_list");
     el("lb-voice-new").textContent = t("lb_voice_new");
-    el("lb-voice-new-note").textContent = t("lb_voice_new_note");
+    // lb-voice-new-note is not set here: it depends on the cloning mode, and
+    // _applyCloneMode owns it.
     el("lb-vp-start").textContent = t("lb_start");
     el("lb-vp-duration").textContent = t("lb_duration");
     el("vp-clip").textContent = t("btn_vp_clip");
@@ -141,11 +146,30 @@ export class VoiceLibrary {
       const response = await fetch("/api/voicepacks", { cache: "no-store" });
       const data = await response.json();
       this.packs = data.voices || [];
+      this.cloneMode = data.clone_mode || "icl";
     } catch (err) {
       this.packs = [];
     }
+    this._applyCloneMode();
     this._render();
     return this.packs;
+  }
+
+  // The pipeline can clone in either of two modes, and they disagree about
+  // whether a voice needs a transcript. Under ICL it is required. Under
+  // xvec_only the library throws it away before the model sees it, so the
+  // field, the recognise button and the "no transcript, quality suffers"
+  // badge are all asking for or complaining about something nothing reads.
+  //
+  // Driven by what the pipeline is actually configured with rather than by a
+  // setting of its own: the mode lives on a command line in services.json,
+  // and a second switch here could only ever disagree with it.
+  _applyCloneMode() {
+    const usesText = this.cloneMode !== "xvec_only";
+    el("vp-text-step").hidden = !usesText;
+    el("lb-voice-new-note").textContent = this.t(
+      usesText ? "lb_voice_new_note" : "lb_voice_new_note_xvec"
+    );
   }
 
   _render() {
@@ -175,11 +199,14 @@ export class VoiceLibrary {
         meta.textContent = this.t("voice_missing");
       } else {
         // No transcript means the clip is there but half the pair is not, and
-        // cloning quality suffers without any error being raised.
-        meta.dataset.warn = String(!pack.ref_text);
-        meta.textContent = pack.ref_text
-          ? format(this.t("voice_meta"), { duration: pack.duration })
-          : format(this.t("voice_meta_notext"), { duration: pack.duration });
+        // cloning quality suffers without any error being raised. Only true in
+        // ICL mode - see _applyCloneMode - and a warning that is not true is
+        // worse than no warning.
+        const wantsText = this.cloneMode !== "xvec_only" && !pack.ref_text;
+        meta.dataset.warn = String(wantsText);
+        meta.textContent = wantsText
+          ? format(this.t("voice_meta_notext"), { duration: pack.duration })
+          : format(this.t("voice_meta"), { duration: pack.duration });
       }
 
       const actions = document.createElement("span");
@@ -187,12 +214,18 @@ export class VoiceLibrary {
       // Renaming and deleting still work on a voice whose clip has gone -
       // deleting it is the likeliest thing the user wants. The two that read
       // the audio do not.
-      for (const [key, handler, needsClip] of [
-        ["btn_play", () => this._play(pack), true],
-        ["btn_retranscribe", (button) => this._retranscribe(pack, button), true],
-        ["btn_rename", () => this._rename(pack), false],
-        ["btn_delete", () => this._delete(pack), false],
-      ]) {
+      //
+      // Re-transcribing is left out entirely in xvec_only mode. It does not
+      // just write text nothing reads: it also shortens the clip to end on a
+      // phrase boundary, which is a real edit to the audio in aid of a mode
+      // that is not running.
+      const buttons = [["btn_play", () => this._play(pack), true]];
+      if (this.cloneMode !== "xvec_only") {
+        buttons.push(["btn_retranscribe", (button) => this._retranscribe(pack, button), true]);
+      }
+      buttons.push(["btn_rename", () => this._rename(pack), false]);
+      buttons.push(["btn_delete", () => this._delete(pack), false]);
+      for (const [key, handler, needsClip] of buttons) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "ghost small";
@@ -314,10 +347,12 @@ export class VoiceLibrary {
         throw new Error(data.error || response.status);
       }
       this.pending = { name: name, path: data.path };
-      let note = format(this.t("vp_clipped"), {
-        duration: data.duration,
-        rate: data.sample_rate,
-      });
+      // The two wordings differ only in what they tell you to do next, and
+      // one of those steps is not on screen in xvec_only mode.
+      let note = format(
+        this.t(this.cloneMode === "xvec_only" ? "vp_clipped_xvec" : "vp_clipped"),
+        { duration: data.duration, rate: data.sample_rate }
+      );
       // Both of these used to happen in silence. Asking for 21 seconds and
       // getting 15 is the sort of thing you only discover by measuring the
       // file, and a cut through the middle of a sentence is what leaves the
@@ -329,7 +364,11 @@ export class VoiceLibrary {
         });
         status.dataset.warn = "true";
       }
-      if (data.ends_mid_speech) {
+      // Only worth saying in ICL mode. A cut through the middle of a word is
+      // what makes the cloner speak the missing tail before every reply, and
+      // that is an ICL artefact - a speaker embedding is averaged over the
+      // whole clip and does not care how the last syllable ends.
+      if (data.ends_mid_speech && this.cloneMode !== "xvec_only") {
         note += " " + this.t("vp_mid_speech");
         status.dataset.warn = "true";
       }
@@ -409,7 +448,7 @@ export class VoiceLibrary {
       for (const warning of data.warnings || []) {
         if (warning === "duplicate_label") {
           this._warn(this.t("vp_warn_duplicate"));
-        } else if (warning === "ends_mid_speech") {
+        } else if (warning === "ends_mid_speech" && this.cloneMode !== "xvec_only") {
           this._warn(this.t("vp_warn_mid_speech"));
         }
       }

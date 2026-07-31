@@ -25,6 +25,8 @@ Endpoints
     GET  /api/voices              list reference audio files
     POST /api/voices?name=&start=&duration=
                                   upload audio, normalise it for Qwen3-TTS
+    GET  /api/voicepacks          the saved voices, plus the cloning mode the
+                                  pipeline is configured for
     POST /api/transcribe?file=    transcribe a reference clip for ref_text
     POST /api/record              mux a recorded reply into recordings/
 """
@@ -207,6 +209,7 @@ class Paths:
         self.voicepacks = os.path.join(self.config, "voices.json")
         self.voices = os.path.join(self.assets, "voices")
         self.bin = os.path.join(self.root, "runtime", "bin")
+        self.services = os.path.join(self.root, "scripts", "services.json")
         self.recordings = os.path.join(self.root, "var", "recordings")
         self.transcribe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcribe.py")
         if not os.path.isdir(self.voices):
@@ -394,6 +397,36 @@ def new_voicepack_id(existing):
     while "%s-%d" % (base, index) in existing:
         index += 1
     return "%s-%d" % (base, index)
+
+
+def clone_mode():
+    """Which cloning mode the voice pipeline is configured for.
+
+    Returns "xvec_only" or "icl". The panel does not choose this - it is a
+    flag on the pipeline's command line in scripts/services.json - but it has
+    to know, because the two modes disagree about whether a voice needs a
+    transcript. Under ICL the reference text is required and a voice without
+    one clones badly. Under xvec_only it is not merely less important: the
+    library replaces it with an empty string before the model ever sees it
+    (faster_qwen3_tts/model.py, the x_vector_only_mode branch), so asking for
+    it, and warning when it is missing, would both be lies.
+
+    Anything unreadable counts as ICL. The two failures are not symmetric:
+    showing a transcript field that turns out to be unused wastes a little of
+    the user's time, while hiding one that turns out to be required leaves
+    voices that cannot clone at all.
+    """
+    try:
+        with open(PATHS.services, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+        for spec in config.get("services", []):
+            if spec.get("id") == "voice":
+                if "--qwen3_tts_xvec_only" in spec.get("command", []):
+                    return "xvec_only"
+                return "icl"
+    except Exception:
+        pass
+    return "icl"
 
 
 def load_voicepacks():
@@ -821,7 +854,7 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         elif route == "/api/voices":
             self._send_json({"voices": self._list_voices()})
         elif route == "/api/voicepacks":
-            self._send_json({"voices": self._list_voicepacks()})
+            self._send_json({"voices": self._list_voicepacks(), "clone_mode": clone_mode()})
         elif route == "/api/voice-file":
             self._send_voice_file()
         elif route == "/api/llm":

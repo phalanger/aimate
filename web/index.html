@@ -318,14 +318,19 @@
             <p id="vp-clip-status" class="field-note"></p>
           </div>
 
-          <label class="field">
-            <span id="lb-vp-text"></span>
-            <textarea id="vp-text" rows="3"></textarea>
-          </label>
-          <div class="row">
-            <button id="vp-transcribe" type="button" class="ghost small"></button>
+          <!-- Only shown when the pipeline is in ICL mode. Under xvec_only the
+               reference transcript is replaced with an empty string before the
+               model sees it, so this whole step would be theatre. -->
+          <div id="vp-text-step" hidden>
+            <label class="field">
+              <span id="lb-vp-text"></span>
+              <textarea id="vp-text" rows="3"></textarea>
+            </label>
+            <div class="row">
+              <button id="vp-transcribe" type="button" class="ghost small"></button>
+            </div>
+            <p id="vp-text-status" class="field-note"></p>
           </div>
-          <p id="vp-text-status" class="field-note"></p>
 
           <label class="field">
             <span id="lb-vp-name"></span>
