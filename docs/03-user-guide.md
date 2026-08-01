@@ -173,15 +173,32 @@ ffmpeg -i 原始音频.mp3 -ss 00:00:12 -t 8 -ac 1 -ar 24000 I:\ai\code\mate\ass
 
 换成你想要的角色：
 
-1. 从 [VRoid Hub](https://hub.vroid.com/) 下载 VRM 模型，或用
-   [VRoid Studio](https://vroid.com/studio) 自己捏一个（免费，导出 VRM）。
-2. 放进 `assets\models\`。
-3. 改 `characters.json` 里该角色的 `vrm` 字段。
+1. 找一个 VRM 模型（下面有几个来源），放进 `assets\models\`。
+2. 改 `characters.json` 里该角色的 `vrm` 字段。
+
+### 去哪找模型
+
+| 来源 | 授权 | 说明 |
+| --- | --- | --- |
+| [Open Source Avatars](https://www.opensourceavatars.com/en/gallery) | 作者本人那 300+ 个是 **CC0** | 直接下载，无需注册。CC0 就是公共领域：随便用、不用署名、可商用 |
+| [VRoid Hub](https://hub.vroid.com/) | **逐个模型不同** | 数量最多，但很多模型禁止改动或商用，下载前必须看那一页的使用条款 |
+| [VRoid Studio](https://vroid.com/studio) | 你自己的作品 | 免费的捏人软件，导出 VRM。想要独一份就用这个 |
+
+**Open Source Avatars 放在第一行是因为授权最省心**——VRM 这个格式里 CC0 很少见，
+多数模型都带着"仅限个人使用"之类的条件，而这套是明确放弃版权的。注意它同时也托管
+别人的合集（比如 VIPE Heroes 是 **CC-BY**，要署名），所以**别默认整站都是 CC0**，
+下载页上写的才算数。
+
+模型素材不在这个仓库里，来源和授权由你自己负责（见 README 的授权一节）。
 
 VRM 0.x 和 1.0 两种规范都支持，代码里已经做了朝向归一化处理。
 
 口型同步靠的是 VRM 的 `aa`/`ih`/`ou`/`ee`/`oh` 五个表情通道，眨眼靠 `blink`。
 如果你的模型没有定义这些表情，嘴就不会动——这是模型本身的问题，不是代码问题。
+
+**不用自己拆开模型看**：角色编辑器的模型下拉框会把缺这几个通道的标成「无口型」，
+选中还会给一条提示。免费模型里这种不少，尤其是从别的格式转过来的，所以下载几个
+挨个试比挑一个死磕划算。
 
 ## 六、界面：画中画、字幕与保存视频
 
