@@ -990,6 +990,90 @@ button:active {
   gap: 4px;
 }
 
+/* ---------- avatar gallery ---------- */
+
+#gallery-backdrop .modal {
+  width: min(960px, 100%);
+  max-height: min(780px, 90vh);
+}
+
+.gallery-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.gallery-controls select {
+  flex: none;
+  min-width: 160px;
+}
+
+.gallery-controls input {
+  flex: 1;
+  min-width: 0;
+}
+
+#gal-status {
+  min-height: 1em;
+  margin: 6px 0;
+}
+
+/* The grid lays cards out in as many columns as fit, so a wider window shows
+   more avatars per row without the cards becoming unreadable. */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+
+.gallery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+/* VRM thumbnails are portrait renders; a 3/4 frame keeps the grid tidy even
+   when the source image is landscape or missing. */
+.gallery-thumb {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.gallery-thumb[data-placeholder="true"] {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.3));
+}
+
+.gallery-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gallery-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.gallery-use {
+  align-self: stretch;
+}
+
 .setting-text {
   width: 260px;
   padding: 7px 10px;

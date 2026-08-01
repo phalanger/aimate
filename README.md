@@ -12,6 +12,18 @@
    └──────────── 随时插话打断 ────────────    浏览器渲染 + FlashHead 口型
 ```
 
+## 预置 VRM 形象
+
+mate 用 VRM 模型当角色的 3D 形象。安装时加 `--curated-avatars`（PowerShell 用
+`-CuratedAvatars`）会拉一个 CC0 精选包：30 个 VRM，约 92 MB，全部 CC0、可商用、
+不用署名。装好后在角色编辑器的 VRM 字段旁点「浏览…」，按缩略图点选即可，不用手填
+路径，浏览器全程不碰公网。
+
+![精选包里的 VRM 形象：Bao Samurai（阿爆，CC0），在面板里实时渲染](docs/img/vrm-baosamurai.jpg)
+
+图里是精选包中的 Bao Samurai。同一个包里还有女海盗 Rose、虎人 Cool Tiger 等 30
+个，风格各异，都是 CC0。
+
 ## 需要什么
 
 - **Windows 10/11**
@@ -204,8 +216,9 @@ runtime\bin\ffmpeg.exe -hide_banner -encoders | Select-String libx264
 - **模型权重** —— Qwen3-TTS、SoulX-FlashHead、Whisper、Qwen3 各有各的许可，请
   到各自的模型页确认，尤其是商用场景。
 
-角色人设、参考音频、VRM/Live2D 模型这些素材都不在仓库里，是你自己的东西，也由你
-自己对它们的来源负责。
+角色人设、参考音频是你自己的东西，也由你对它们的来源负责。VRM 模型方面，mate 自
+带一个可选的 CC0 精选包（见开头，`--curated-avatars` 开启）；其它的 VRM、Live2D
+模型仍由你自己准备。
 
 ### 关于声音克隆
 

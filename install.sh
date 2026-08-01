@@ -6,6 +6,7 @@ PYTHON_ROOT="$ROOT/runtime/python"
 WITH_MUSETALK=0
 MIRROR=0
 SKIP_LIPSYNC=0
+INSTALL_CURATED_AVATARS=0
 
 usage() {
   cat <<'EOF'
@@ -17,6 +18,7 @@ Install mate for Linux/WSL:
   - CUDA PyTorch wheels
   - FlashHead and Qwen3-TTS weights
   - first-run config files
+  - ~30 curated CC0 VRM avatars (~92 MB) - OPT IN with --curated-avatars
 
 EOF
 }
@@ -26,6 +28,7 @@ while [[ $# -gt 0 ]]; do
     --with-musetalk) WITH_MUSETALK=1 ;;
     --mirror) MIRROR=1 ;;
     --skip-lipsync) SKIP_LIPSYNC=1 ;;
+    --curated-avatars) INSTALL_CURATED_AVATARS=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
@@ -42,6 +45,7 @@ step_no=0
 step_total=7
 if [[ $SKIP_LIPSYNC -eq 1 ]]; then step_total=7; else step_total=8; fi
 if [[ $WITH_MUSETALK -eq 1 ]]; then step_total=$((step_total + 1)); fi
+if [[ "${INSTALL_CURATED_AVATARS:-0}" == "1" ]]; then step_total=$((step_total + 1)); fi
 
 step() {
   step_no=$((step_no + 1))
@@ -143,6 +147,58 @@ download_zip() {
   note "Downloading $label"
   mkdir -p "$(dirname "$target")"
   curl -fL --retry 5 --retry-delay 2 --connect-timeout 20 -o "$target" "$url"
+}
+
+download_curated_avatars() {
+  local manifest="$ROOT/config/curated-avatars.json"
+  local base="$ROOT/assets/models/curated"
+  if [[ ! -f "$manifest" ]]; then
+    skip "curated manifest not found (config/curated-avatars.json)"
+    return
+  fi
+  mkdir -p "$base"
+  # Bash has no JSON parser; Python does, and the s2s env is already a hard
+  # dependency of this script. Each entry pulls two files: the VRM model and
+  # its thumbnail, so the gallery grid never reaches a third-party CDN. One
+  # failed download is logged and skipped rather than aborting the install -
+  # the gallery still lists anything that did land here, and re-running picks
+  # up the misses.
+  "$S2S_PY" - "$manifest" "$base" <<'PY'
+import json, os, subprocess, sys
+manifest, base = sys.argv[1], sys.argv[2]
+entries = json.load(open(manifest, encoding="utf-8")).get("entries", [])
+total = len(entries)
+thumb_dir = os.path.join(base, "thumbnails")
+os.makedirs(thumb_dir, exist_ok=True)
+
+def fetch(url, target, label, i):
+    if os.path.exists(target) and os.path.getsize(target) > 0:
+        print("      [%d/%d] skip %s (already downloaded)" % (i, total, label))
+        return
+    print("      [%d/%d] downloading %s" % (i, total, label))
+    try:
+        subprocess.run(
+            ["curl", "-fL", "--retry", "5", "--retry-delay", "2",
+             "--connect-timeout", "20", "-o", target, url],
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        print("      WARN: %s failed (curl exit %s); skipping" % (label, exc.returncode))
+        if os.path.exists(target):
+            os.remove(target)
+
+for i, entry in enumerate(entries, 1):
+    fetch(entry["model_url"],
+          os.path.join(base, os.path.basename(entry["file"])),
+          os.path.basename(entry["file"]), i)
+    # Thumbnail is optional: a missing one just shows the placeholder, and an
+    # entry with no thumbnail (or no source URL) is skipped silently.
+    thumb_rel = entry.get("thumbnail") or ""
+    if thumb_rel and entry.get("thumbnail_url"):
+        fetch(entry["thumbnail_url"],
+              os.path.join(thumb_dir, os.path.basename(thumb_rel)),
+              "thumbnail " + os.path.basename(entry["file"]), i)
+PY
 }
 
 install_runtime_resources() {
@@ -300,7 +356,7 @@ PY
   fi
 fi
 
-for name in characters voices providers settings; do
+for name in characters voices providers settings avatars; do
   live="$ROOT/config/$name.json"
   template="$ROOT/config/$name.example.json"
   if [[ -f "$live" ]]; then
@@ -310,6 +366,13 @@ for name in characters voices providers settings; do
     note "Created config/$name.json"
   fi
 done
+
+if [[ "${INSTALL_CURATED_AVATARS:-0}" != "1" ]]; then
+  skip "Curated VRM avatars: opt-in with --curated-avatars (or INSTALL_CURATED_AVATARS=1) for the ~92 MB CC0 pack"
+else
+  step "Curated VRM avatars (about 92 MB)"
+  download_curated_avatars
+fi
 
 step "Smoke checks"
 "$S2S_PY" - <<'PY'
