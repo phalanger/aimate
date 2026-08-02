@@ -6,9 +6,9 @@ this proxy instead makes the provider a runtime choice: the pipeline always
 talks to one fixed local URL, and switching providers is a config write rather
 than a restart that would reload Whisper and the TTS model.
 
-All five supported providers speak the OpenAI chat-completions protocol, so
-this only rewrites the target URL, the credential and the model name - there is
-no protocol translation.
+Supported providers speak the OpenAI chat-completions protocol, so this only
+rewrites the target URL, the credential and the model name - there is no
+protocol translation.
 
 The one thing it does rewrite is reasoning: models that think out loud put the
 whole chain of thought in the reply, and the pipeline hands the reply straight
@@ -250,6 +250,10 @@ def proxy_chat(store, body, write_status, write_chunk):
     # choice lives in the provider config.
     if provider.get("model"):
         payload["model"] = provider["model"]
+
+    request_options = provider.get("request_options")
+    if isinstance(request_options, dict):
+        payload.update(request_options)
 
     if provider.get("needs_key") and not provider.get("api_key"):
         raise RouterError(400, "provider '%s' has no API key set" % name)

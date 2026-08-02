@@ -25,19 +25,24 @@
       "label": "智谱 GLM · Coding Plan",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
       "api_key": "",
-      "model": "",
+      "model": "glm-5-turbo",
       "needs_key": true,
       "local": false,
-      "hint": "Coding Plan 专属端点。按量付费的 key 请改用 https://open.bigmodel.cn/api/paas/v4"
+      "hint": "Coding Plan 专属端点。语音对话默认关闭 thinking，首包更快。按量付费的 key 请改用 https://open.bigmodel.cn/api/paas/v4",
+      "request_options": {
+        "thinking": {
+          "type": "disabled"
+        }
+      }
     },
     "deepseek": {
       "label": "DeepSeek",
-      "base_url": "https://api.deepseek.com/v1",
+      "base_url": "https://api.deepseek.com",
       "api_key": "",
       "model": "deepseek-v4-flash",
       "needs_key": true,
       "local": false,
-      "hint": "官网 API。deepseek-reasoner 会输出思考过程，语音场景建议用 deepseek-chat。"
+      "hint": "DeepSeek 官方 OpenAI 兼容 API。语音对话建议用 deepseek-v4-flash；需要更强能力可切到 deepseek-v4-pro。"
     },
     "siliconflow": {
       "label": "硅基流动",
