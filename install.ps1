@@ -17,6 +17,7 @@
 #   .\install.ps1 -WithMuseTalk   add the old lip-sync backend, ~41 GB
 #   .\install.ps1 -Mirror         route HuggingFace through hf-mirror.com
 #   .\install.ps1 -SkipBuild      do not compile mate.exe (no Rust needed)
+#   .\install.ps1 -CuratedAvatars add the ~92 MB curated CC0 VRM starter pack
 
 [CmdletBinding()]
 param(
@@ -26,7 +27,10 @@ param(
     [switch]$WithMuseTalk,
     # For networks where huggingface.co is unreachable.
     [switch]$Mirror,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # ~30 CC0 VRM avatars (~92 MB) for the in-panel gallery. Opt-in: the panel
+    # works without them, and not every install wants the extra bytes.
+    [switch]$CuratedAvatars
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,6 +47,7 @@ $script:StepNumber = 0
 $script:StepTotal = 8
 if ($WithMuseTalk) { $script:StepTotal += 1 }
 if ($SkipBuild) { $script:StepTotal -= 1 }
+if ($CuratedAvatars -or $env:INSTALL_CURATED_AVATARS -eq "1") { $script:StepTotal += 1 }
 
 function Write-Step($text) {
     $script:StepNumber += 1
@@ -223,6 +228,71 @@ function Get-File($url, $target, $label) {
     }
 }
 
+# Reads config/curated-avatars.json and downloads each CC0 VRM (and its
+# thumbnail) into assets/models/curated/. Per-file resilient: one failure logs
+# and continues rather than aborting the install, so the gallery still lists
+# anything that did land here, and re-running picks up the misses.
+function Get-CuratedAvatars($manifestPath, $baseDir) {
+    if (-not (Test-Path $manifestPath)) {
+        Write-Skip "curated manifest not found ($manifestPath)"
+        return
+    }
+    New-Item -ItemType Directory -Force -Path $baseDir | Out-Null
+    # Thumbnails sit in a subfolder beside the models so the gallery grid
+    # never reaches a third-party CDN for previews.
+    $thumbDir = Join-Path $baseDir "thumbnails"
+    New-Item -ItemType Directory -Force -Path $thumbDir | Out-Null
+    $manifest = Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $entries = @($manifest.entries)
+    $total = $entries.Count
+    $i = 0
+    foreach ($entry in $entries) {
+        $i++
+        $leaf = Split-Path -Leaf $entry.file
+        $target = Join-Path $baseDir $leaf
+        if ((Test-Path $target) -and (Get-Item $target).Length -gt 0) {
+            Write-Skip ("[{0}/{1}] skip {2} (already downloaded)" -f $i, $total, $leaf)
+        } else {
+            Write-Note ("[{0}/{1}] downloading {2}" -f $i, $total, $leaf)
+            try {
+                $previous = $ProgressPreference
+                $ProgressPreference = "SilentlyContinue"
+                try {
+                    Invoke-WebRequest -Uri $entry.model_url -OutFile $target -UseBasicParsing -ErrorAction Stop
+                } finally {
+                    $ProgressPreference = $previous
+                }
+            } catch {
+                Write-Warn ("{0} failed ({1}); skipping" -f $leaf, $_.Exception.Message)
+                if (Test-Path $target) { Remove-Item $target -Force }
+            }
+        }
+        # Thumbnail is optional: a missing one just shows the placeholder, and
+        # an entry with no thumbnail (or no source URL) is skipped silently.
+        $thumbRel = $entry.thumbnail
+        if ($thumbRel -and $entry.thumbnail_url) {
+            $thumbTarget = Join-Path $thumbDir (Split-Path -Leaf $thumbRel)
+            if ((Test-Path $thumbTarget) -and (Get-Item $thumbTarget).Length -gt 0) {
+                Write-Skip ("[{0}/{1}] skip thumbnail {2} (already downloaded)" -f $i, $total, $leaf)
+            } else {
+                Write-Note ("[{0}/{1}] downloading thumbnail {2}" -f $i, $total, $leaf)
+                try {
+                    $previous = $ProgressPreference
+                    $ProgressPreference = "SilentlyContinue"
+                    try {
+                        Invoke-WebRequest -Uri $entry.thumbnail_url -OutFile $thumbTarget -UseBasicParsing -ErrorAction Stop
+                    } finally {
+                        $ProgressPreference = $previous
+                    }
+                } catch {
+                    Write-Warn ("thumbnail {0} failed ({1}); skipping" -f $leaf, $_.Exception.Message)
+                    if (Test-Path $thumbTarget) { Remove-Item $thumbTarget -Force }
+                }
+            }
+        }
+    }
+}
+
 # ---------------------------------------------------------------- models ----
 
 Write-Step "Lip-sync model (FlashHead, ~8.3 GB)"
@@ -334,7 +404,7 @@ if (Test-Path $DefaultVoice) {
 
 # Copied, never overwritten: these are yours once they exist, and none of them
 # is tracked by git.
-foreach ($name in @("characters", "voices", "providers", "settings")) {
+foreach ($name in @("characters", "voices", "providers", "settings", "avatars")) {
     $live = Join-Path $Root ("config\{0}.json" -f $name)
     $template = Join-Path $Root ("config\{0}.example.json" -f $name)
     if (Test-Path $live) {
@@ -343,6 +413,13 @@ foreach ($name in @("characters", "voices", "providers", "settings")) {
         Copy-Item $template $live
         Write-Note "Created config\$name.json"
     }
+}
+
+if (-not ($CuratedAvatars -or $env:INSTALL_CURATED_AVATARS -eq "1")) {
+    Write-Skip "Curated VRM avatars: opt-in with -CuratedAvatars (or INSTALL_CURATED_AVATARS=1) for the ~92 MB CC0 pack"
+} else {
+    Write-Step "Curated VRM avatars (~92 MB)"
+    Get-CuratedAvatars (Join-Path $Root "config\curated-avatars.json") (Join-Path $Root "assets\models\curated")
 }
 
 # ----------------------------------------------------------------- build ----

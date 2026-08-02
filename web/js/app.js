@@ -3,6 +3,7 @@ import { AudioEngine } from "./audio.js";
 import { RealtimeClient } from "./realtime.js";
 import { CharacterEditor } from "./editor.js";
 import { VoiceLibrary } from "./voices.js";
+import { AvatarGallery } from "./gallery.js";
 import { LlmSettings } from "./llm.js";
 import { SettingsDialog, loadSettings, setting } from "./settings.js";
 import { HeadInset } from "./inset.js";
@@ -1151,6 +1152,9 @@ async function main() {
   state.voices = new VoiceLibrary({ translate: t });
   state.voices.applyStaticText();
 
+  state.gallery = new AvatarGallery({ translate: t });
+  state.gallery.applyStaticText();
+
   state.editor = new CharacterEditor({
     translate: t,
     onSaved: (_config, activeId) => reloadCharacters(activeId),
@@ -1161,6 +1165,9 @@ async function main() {
         state.voices.onChanged = resolve;
         state.voices.open();
       }),
+    // Resolves with the avatar the user picked (or null if they closed the
+    // dialog without choosing). The editor sets the VRM field from .file.
+    onBrowseGallery: () => state.gallery.open(),
   });
   state.editor.applyStaticText();
 

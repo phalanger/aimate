@@ -167,11 +167,14 @@
             <p id="ed-avatar-note" class="field-note"></p>
           </div>
 
-          <label class="field" id="ed-vrm-field">
+          <div class="field" id="ed-vrm-field">
             <span id="lb-vrm"></span>
-            <select id="ed-vrm"></select>
+            <div class="row">
+              <select id="ed-vrm"></select>
+              <button id="ed-browse-gallery" type="button" class="ghost small"></button>
+            </div>
             <p id="dir-vrm" class="field-note"></p>
-          </label>
+          </div>
 
           <label class="field" id="ed-motion-field">
             <span id="lb-motion"></span>
@@ -359,6 +362,28 @@
           <button id="voices-close" type="button" class="ghost" hidden></button>
           <button id="voices-done" type="button" class="ghost"></button>
           <button id="vp-save" type="button" class="primary"></button>
+        </footer>
+      </div>
+    </div>
+
+    <div id="gallery-backdrop" class="backdrop" hidden>
+      <div class="modal modal-wide">
+        <header class="modal-head">
+          <h2 id="gallery-title"></h2>
+        </header>
+
+        <div class="modal-body">
+          <div class="gallery-controls">
+            <select id="gal-collection"></select>
+            <input id="gal-search" type="search" />
+          </div>
+          <p id="gal-status" class="field-note"></p>
+          <div id="gal-grid" class="gallery-grid"></div>
+        </div>
+
+        <footer class="modal-foot">
+          <div class="spacer"></div>
+          <button id="gallery-done" type="button" class="ghost"></button>
         </footer>
       </div>
     </div>

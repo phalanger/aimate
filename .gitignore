@@ -52,6 +52,7 @@
 /config/characters.json
 /config/voices.json
 /config/settings.json
+/config/avatars.json
 
 # Live2D Cubism Core is proprietary. Its own header calls it "Redistributable
 # Code", but redistribution is governed by an agreement this project has not

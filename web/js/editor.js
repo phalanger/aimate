@@ -54,6 +54,7 @@ export class CharacterEditor {
     this.t = options.translate;
     this.onSaved = options.onSaved;
     this.onManageVoices = options.onManageVoices;
+    this.onBrowseGallery = options.onBrowseGallery;
     this.selectedVoiceId = "";
     this.legacyVoicePath = "";
     this.config = null;
@@ -125,6 +126,27 @@ export class CharacterEditor {
         await this._loadVoices(this.selectedVoiceId);
       }
     });
+    el("ed-browse-gallery").addEventListener("click", async () => {
+      // The gallery is a picker for VRMs already on disk (the curated pack or
+      // anything dropped into assets/models/). It resolves with the chosen
+      // avatar, and this dialog just sets the VRM field from its file path -
+      // the same value the dropdown above holds.
+      if (!this.onBrowseGallery) {
+        return;
+      }
+      const picked = await this.onBrowseGallery();
+      if (picked && picked.file) {
+        this.avatar.vrm = picked.file;
+        // The VRM field is only visible in vrm mode, so a pick from another
+        // mode switches to it - otherwise the choice would be silently hidden.
+        if (this.avatar.type !== "vrm") {
+          this.avatar.type = "vrm";
+          this._renderAvatarTypes();
+        }
+      }
+      await this._loadAssets();
+      this._showLipsyncWarning();
+    });
     el("ed-mt-prepare").addEventListener("click", () => this._prepareMuseTalk());
     el("ed-save").addEventListener("click", () => this._save());
     el("ed-delete").addEventListener("click", () => this._delete());
@@ -153,6 +175,7 @@ export class CharacterEditor {
     el("ed-rules").textContent = t("btn_rules");
     el("ed-play").textContent = t("btn_play");
     el("ed-manage-voices").textContent = t("btn_manage_voices");
+    el("ed-browse-gallery").textContent = t("gallery_browse_button");
     el("ed-save").textContent = t("btn_save");
     el("ed-cancel").textContent = t("btn_cancel");
     el("ed-delete").textContent = t("btn_delete");

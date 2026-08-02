@@ -141,6 +141,74 @@ def sync_settings_from_template(config_dir):
     print("Added %d new setting(s) from the template: %s" % (len(added), ", ".join(added)))
 
 
+def sync_avatars_from_template(config_dir):
+    """Create or top up the live avatar registry from the tracked template.
+
+    Same shape as sync_settings_from_template: the live file is not tracked
+    because the panel writes user imports into it, but curated entries
+    shipped in the template still need to reach existing installs on
+    upgrade. Each template entry is matched on ``id``; anything missing
+    locally is added, anything already local is left untouched - including
+    user imports and any field the user may have edited.
+
+    A curated entry whose binary has been deleted from disk is not re-added
+    here: the file would be missing and the dropdown would flag it. The
+    install scripts own re-downloading curated binaries.
+    """
+    template_path = os.path.join(config_dir, "avatars.example.json")
+    live_path = os.path.join(config_dir, "avatars.json")
+    if not os.path.exists(template_path):
+        return
+
+    try:
+        with open(template_path, "r", encoding="utf-8") as handle:
+            template = json.load(handle)
+    except (OSError, ValueError):
+        return
+
+    template_entries = template.get("avatars", []) if isinstance(template, dict) else []
+    if not isinstance(template_entries, list):
+        return
+
+    if not os.path.exists(live_path):
+        with open(live_path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"_comment": template.get("_comment", ""), "avatars": template_entries},
+                handle,
+                ensure_ascii=False,
+                indent=2,
+            )
+            handle.write("\n")
+        print("Created config/avatars.json from the template")
+        return
+
+    try:
+        with open(live_path, "r", encoding="utf-8") as handle:
+            live = json.load(handle)
+    except (OSError, ValueError):
+        print("config/avatars.json is not valid JSON, not touching it")
+        return
+
+    if not isinstance(live, dict) or not isinstance(live.get("avatars"), list):
+        return
+
+    known = {entry.get("id") for entry in live["avatars"] if isinstance(entry, dict)}
+    added = 0
+    for entry in template_entries:
+        if isinstance(entry, dict) and entry.get("id") not in known:
+            live["avatars"].append(entry)
+            added += 1
+    if not added:
+        return
+
+    temp = live_path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(live, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(temp, live_path)
+    print("Added %d curated avatar(s) from the template" % added)
+
+
 def read_lan_setting(config_dir):
     """Whether the user opted into serving the whole network.
 
@@ -209,12 +277,22 @@ class Paths:
         self.settings = os.path.join(self.config, "settings.json")
         self.voicepacks = os.path.join(self.config, "voices.json")
         self.voices = os.path.join(self.assets, "voices")
+        self.avatars = os.path.join(self.config, "avatars.json")
+        self.curated_manifest = os.path.join(self.config, "curated-avatars.json")
+        self.models_curated = os.path.join(self.assets, "models", "curated")
+        self.models_imported = os.path.join(self.assets, "models", "imported")
         self.bin = os.path.join(self.root, "runtime", "bin")
         self.services = os.path.join(self.root, "scripts", "services.json")
         self.recordings = os.path.join(self.root, "var", "recordings")
         self.transcribe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcribe.py")
-        if not os.path.isdir(self.voices):
-            os.makedirs(self.voices)
+        # /assets/ is gitignored as a whole, so on a fresh clone none of these
+        # exist yet. Created here so the panel works on a clone-and-run with
+        # no install script: curated/ holds the optional starter pack, and
+        # imported/ is a drop folder for VRMs added by hand. Both are scanned
+        # by /api/assets, so a file in either is selectable without a rescan.
+        for needed in (self.voices, self.models_curated, self.models_imported):
+            if not os.path.isdir(needed):
+                os.makedirs(needed)
 
 
 PATHS = None
@@ -864,6 +942,8 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json(STORE.public_view())
         elif route == "/api/assets":
             self._send_json(self._list_assets())
+        elif route == "/api/avatars":
+            self._send_json({"avatars": self._list_avatars()})
         elif route == "/api/settings":
             with open(PATHS.settings, "r", encoding="utf-8") as handle:
                 self._send_json(json.load(handle))
@@ -963,7 +1043,18 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
                     )
 
         return {
-            "vrm": {"dir": "assets\models\\", "items": scan("models", (".vrm",))},
+            # Three scan locations feed one dropdown: files the user dropped
+            # at the top level, ones the install script shipped in curated/,
+            # and ones the user dropped into imported/. The same /assets/models
+            # mount already serves all three to the browser.
+            "vrm": {
+                "dir": "assets\\models\\ + curated\\ + imported\\",
+                "items": (
+                    scan("models", (".vrm",))
+                    + scan("models/curated", (".vrm",))
+                    + scan("models/imported", (".vrm",))
+                ),
+            },
             "motion": {
                 "dir": "assets\models\motions\\",
                 "items": scan("models/motions", (".vrma",)),
@@ -1158,6 +1249,46 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         del packs[pack_id]
         save_voicepacks(packs)
         self._send_json({"ok": True, "voices": self._list_voicepacks()})
+
+    # ---------- avatar gallery ----------
+
+    def _list_avatars(self):
+        """The local avatar registry, read straight from config/avatars.json.
+
+        Curated entries are seeded there from config/avatars.example.json at
+        startup (sync_avatars_from_template); anything the user added by hand
+        is preserved. There is no remote catalog in this build, so this is a
+        plain file read - the panel never reaches the public internet for
+        avatars. Each entry is annotated with whether its file is still on disk
+        and how large it is, so the gallery can flag a curated entry whose
+        binary the install step did not (yet) fetch.
+        """
+        out = []
+        try:
+            with open(PATHS.avatars, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return out
+        entries = data.get("avatars", []) if isinstance(data, dict) else []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            copy = dict(entry)
+            file_field = copy.get("file", "")
+            rel = (
+                file_field[len("assets/"):]
+                if file_field.startswith("assets/")
+                else file_field
+            )
+            abs_path = (
+                os.path.normpath(os.path.join(PATHS.assets, rel))
+                if file_field
+                else ""
+            )
+            copy["exists"] = bool(abs_path and os.path.exists(abs_path))
+            copy["bytes"] = os.path.getsize(abs_path) if copy["exists"] else 0
+            out.append(copy)
+        return out
 
     def _put_characters(self):
         try:
@@ -1634,6 +1765,7 @@ def main():
 
     # Before anything reads settings, including the line below.
     sync_settings_from_template(PATHS.config)
+    sync_avatars_from_template(PATHS.config)
 
     host = args.host
     if host is None:
