@@ -1107,6 +1107,7 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         for pack_id, pack in sorted(packs.items(), key=lambda kv: kv[1].get("label", "")):
             entry = dict(pack)
             entry["id"] = pack_id
+            entry["language"] = pack.get("language", "zh")
             path = pack.get("file", "")
             if path and os.path.exists(path):
                 duration, rate, channels, subtype = audio_info(path)
@@ -1158,11 +1159,23 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
         if clip_ends_mid_speech(path):
             warnings.append("ends_mid_speech")
 
+        existing = packs.get(pack_id, {})
+        # language is optional and defaults to Mandarin (zh). Carry the
+        # existing value through a rename - which sends no language - so a
+        # Cantonese pack is not silently reset to Mandarin. The panel's new-
+        # voice flow still sends none, so UI-created packs stay zh; non-
+        # Mandarin packs are authored in config/voices.json directly. See
+        # docs/09-cantonese.md.
+        if "language" in payload:
+            language = (payload.get("language") or "zh").strip() or "zh"
+        else:
+            language = existing.get("language", "zh")
         packs[pack_id] = {
             "label": label,
             "file": path.replace("\\", "/"),
             "ref_text": (payload.get("ref_text") or "").strip(),
-            "created": packs.get(pack_id, {}).get("created") or today(),
+            "language": language,
+            "created": existing.get("created") or today(),
         }
         save_voicepacks(packs)
         self._send_json(
@@ -1195,7 +1208,11 @@ class PanelRequestHandler(http.server.SimpleHTTPRequestHandler):
             raise PanelError(404, "the clip is missing: " + path)
 
         was = packs[pack_id].get("ref_text", "")
-        text = transcribe_audio(path, self._param("language", "zh"))
+        # Transcribe in the pack's own language: a Cantonese clip has to be
+        # read as Cantonese (yue), not forced to Mandarin. Packs that predate
+        # the language field have none, so they fall back to zh - unchanged
+        # behaviour. See docs/09-cantonese.md.
+        text = transcribe_audio(path, packs[pack_id].get("language", "zh"))
         packs[pack_id]["ref_text"] = text
         save_voicepacks(packs)
 
