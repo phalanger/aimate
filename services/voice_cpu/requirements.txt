@@ -1,0 +1,8 @@
+# CPU realtime voice bridge — no CUDA, no GPU, no ffmpeg.
+# Install on the China box via the proxy: pip picks up HTTPS_PROXY from the env.
+aiohttp>=3.9          # HTTP GET / probe + WebSocket /v1/realtime, one server
+httpx>=0.27           # streaming SSE to the panel's GLM proxy
+numpy>=1.26           # PCM / RMS math + 22050->16k TTS resample
+faster-whisper>=1.0   # CPU ASR (CTranslate2 int8); pulls onnxruntime, reused below
+piper-tts>=1.0        # local offline TTS (ONNX voice); reuses onnxruntime
+sherpa-onnx>=1.10     # 粵語 TTS (VITS, only on the yue path); reuses onnxruntime
