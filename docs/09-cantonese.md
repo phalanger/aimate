@@ -1,118 +1,88 @@
 # 粵語（实验性）
 
-> 对应 issue #5。整套粵語能力是**实验性**的——ASR 那半稳，TTS 那半没在 app 里验证过，
-> 本文把已知和未知都摊开。本机是 GPU-less 的 WSL（见 [08](08-wsl-deployment.md)），跑
-> 不了语音流水线，所以文末的「验证」是给 GPU 主机的清单，不是已经做过的事。
+> 对应 issue #5。两条路：**GPU 流水线**（issue 原本的 whisper-large-v3-turbo + Qwen3-TTS
+> 方案）和 **CPU 桥**（`services/voice_cpu/`，GPU-less 机器的实时语音桥，本机实测跑通）。
+> ASR 两边都稳；TTS 的关键结论：**Qwen3-TTS base 实测不出粵語**（繁體被读成普通话），
+> **CPU 桥用 sherpa-onnx VITS 出真粵語**。本文把已知/未知都摊开。
 
 ## 一、粵語怎么接上来的
 
-现有流水线是 `麦克风 → Silero VAD → Whisper large-v3-turbo → 大模型 → Qwen3-TTS →
-扬声器`。粵語没有换任何一个模型，只动了「认哪种话」「说什么话」「拿谁的音色」三件事。
+两条路都只动「认哪种话 / 说什么话 / 出什么音」，没换模型族。
 
-### ASR：认粵語
+### ASR：认粵語（两边通用）
 
-Whisper large-v3-turbo 带 `yue` 这个语言码。原来 `scripts/services.json` 里写死
-`--language zh`，现在改成命名变量：
+Whisper 带 `yue` 这个语言码。
 
-```jsonc
-"vars":       { ..., "asr_language": "zh" },
-"vars_posix": { ..., "asr_language": "zh" }
-// voice 服务的命令数组：
-"--language", "{asr_language}"
-```
+- GPU 流水线：`scripts/services.json` 的 `--language` 现在是命名变量 `{asr_language}`
+  （默认 `zh`，粵語改 `yue`）。`launcher.py` 的单次识别补丁（[07 四点六](07-voice-library.md)）
+  只在语言被钉死时接管，`yue` 一样吃红利。
+- CPU 桥：`services/voice_cpu/asr.py` 读 `MATE_ASR_LANGUAGE`（默认 `zh`），粵語设 `yue`。
 
-粵語就把 `asr_language` 改成 `yue`。`launcher.py` 那个「识别别跑两遍」的补丁（见
-[四点六](07-voice-library.md#四点六launcher-里搭车的第二个补丁识别别跑两遍)）只在语言
-被钉死时接管，`yue` 也是钉死的，所以照样省掉那次重跑。
+### TTS：粵語的字 → 粵語的音
 
-### TTS：让粵語的字变成粵語的音
+**GPU 流水线（Qwen3-TTS）——实测不出粵語。** issue #5 设想「base Qwen3-TTS + 繁體字 →
+粵語」，依据是 QwenLM/Qwen3-TTS#141 的社区技巧。实测下来 base 模型把繁體读成**普通话**
+（听了合成样本确认）。而且克隆走 `--qwen3_tts_xvec_only`：参考音频只提供说话人向量
+（音色），参考文本在合成前被丢弃——所以**参考音频决定「谁在说」，不决定「说什么话、
+哪种话」**，换个粵語参考音频也救不了。会做粵語的 Flash 方言版 / 社区粵語 finetune 都
+gated（401），开放权重拿不到。结论：issue 的 TTS 前设在开放 base 上**不成立**；GPU 那
+半仍待主机验证，且据本机实验预期 base 还是普通话。
 
-这是实验里最不确定的一块，先把机制讲清楚。
+**CPU 桥（sherpa-onnx VITS）——出真粵語。** `services/voice_cpu/tts.py` 在
+`MATE_ASR_LANGUAGE=yue` 时走 sherpa-onnx 的粵語 VITS（`vits-cantonese-hf-xiaomaiiwn`）。
+非自回归，~1.5s/句，离线，实测粵語发音正确。代价：lexicon 有 OOV，偶吞字（补 lexicon /
+换分词可调）；单音色。
 
-Qwen3-TTS **base** 模型的官方模型卡列 10 种语言，「中文」指的是普通话，没有粵語。社区
-在 QwenLM/Qwen3-TTS#141 里给过一个实用技巧：**喂繁体字，读出来偏粵語；喂简体字，偏普
-通话**。（issue #5 把 #141 描述成「含可下载的粵語 WAV」——查证下来 #141 已关闭、没有
-可下载样本；有用的就是这句繁体技巧。这里如实记下。）
+## 二、怎么开启
 
-更重要的一层：当前克隆走的是 `--qwen3_tts_xvec_only`（见
-[四点七](07-voice-library.md#四点七开关又拨回去了以及界面为此变成跟着模式走)）。这个
-模式下，参考音频**只提供说话人向量（音色），参考文本在合成前被整个丢弃**。也就是说：
+### CPU 桥（本机已验证粵語）
 
-> **参考音频决定「谁在说」，不决定「说什么话、哪种话」。**粵語发音不是靠那段粵語参考
-> 音频逼出来的，是靠**大模型用繁体粵語口语回复**带出来的。
+1. voice_cpu venv 装依赖（含 sherpa-onnx）：
+   `pip install -r services/voice_cpu/requirements.txt`
+2. 下粵語 VITS 模型（`runtime/` 已 gitignore，模型自备，约 108MB）：
+   ```bash
+   curl -L -o /tmp/c.tar.bz2 \
+     https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-cantonese-hf-xiaomaiiwn.tar.bz2
+   (cd runtime/models && tar xjf /tmp/c.tar.bz2)   # -> runtime/models/vits-cantonese-hf-xiaomaiiwn/
+   ```
+3. 启桥（粵語 ASR + 粵語 TTS；`MATE_ASR_MODEL` 用 turbo 更准）：
+   ```bash
+   MATE_ASR_LANGUAGE=yue MATE_ASR_MODEL=runtime/models/faster-whisper-large-v3-turbo \
+     bash scripts/start-voice-cpu.sh
+   ```
+4. 面板（:8900）切「阿粵」，讲粵語 → 听到粵語回复。
 
-所以粵語角色的 `system_prompt` 才是真正的开关。`ahyue` 的人设写成繁体粵語口语：
+服务级：整个桥一次只认一种话。切 `yue` 后普通话 ASR 失效，直到切回 `zh`。要做按角色运行
+时切语言得改 Realtime 协议（`session.update` 没有 language 槽），超本次范围。
 
-```
-你叫阿粵。你用粵語（廣東話）同人傾偈……
-二、用粵語口語，用繁體字寫。唔好用書面語……
-```
+### GPU 流水线（待验证）
 
-繁体 + 口语 + 粵語用词，三样合起来才让 base 模型读出粵語味。参考音频（`v-cantonese`
-音色包）只负责音色像不像那个录粵語的人。
+设 `asr_language=yue`、放 `assets/voices/cantonese.wav`、切阿粵、重启语音服务。但据本机
+实验，Qwen3-TTS base 预期读成普通话——要真粵語得换 Flash / gated 的粵語模型。
 
-## 二、一个关键事实：音色 ≠ 语言
+## 三、给后续语种留的路
 
-把上面两点合起来，粵語这件事的杠杆分布是：
+机制是通用的，没把粵語写成特例。加新语种（日 / 韩 / ……）三步：
 
-| 环节 | 杠杆在哪 | 粵語靠它什么 |
-| --- | --- | --- |
-| ASR | `{asr_language}` | 设成 `yue`，识别粵語而不是普通话 |
-| LLM | 角色 `system_prompt` | 让它回繁体粵語口语（粵語发音的真正来源） |
-| TTS | 参考音频 | 只换音色，**不**影响说的是不是粵語 |
+1. **ASR**：`asr_language`（GPU）或 `MATE_ASR_LANGUAGE`（CPU 桥）改成对应 Whisper 码
+   （Whisper 覆盖约 99 种）。
+2. **TTS**：
+   - CPU 桥：换 sherpa-onnx 对应语种的 VITS（覆盖广，粵語已验证）；`tts.py` 按语言分支。
+   - GPU 流水线：Qwen3-TTS 官方 10 语言内的可直接用；之外的（含粵語）实测靠不住。
+   - GPU 音色包：`config/voices.json` 带 `language` 字段（顺手修了 `server/server.py`
+     里 `_retranscribe_voicepack`/`_post_transcribe` 写死 `zh` 的转写 bug），按包语言转写。
+3. **角色**：加角色，`system_prompt` 用目标语言的口语写。
 
-这也是为什么「加个粵語参考音频」单独做没用——音频再粵語，大模型回的是普通话，合成出
-来还是普通话味。三件事必须一起改。
+## 四、验证
 
-## 三、怎么开启（服务级，需重启）
+- **CPU 桥（本机，已验证）**：turbo + `yue` ASR 转粵語、阿粵 LLM 回繁體粵語、sherpa VITS
+  出粵語发音；端到端粵語，基本实时。
+- **GPU 流水线（待验证）**：whisper-large-v3-turbo + Qwen3-TTS，本机无 GPU 跑不了；据 CPU
+  实验预期 base 读普通话，真粵語需 Flash / gated 模型。
+- 本机已核对：改过的 JSON 都解析；面板 `/api/characters` 含阿粵、`/api/voicepacks` 含
+  `v-cantonese`（`language=yue`）；voice_cpu 五个 .py 编译通过。
 
-1. 录一段十秒以内的干净粵語，放到 `assets/voices/cantonese.wav`，把 `config/voices.json`
-   里 `v-cantonese` 的 `ref_text` 改成你实际念的字（逐字对应）。
-2. 把 `scripts/services.json` 里 `asr_language` 从 `zh` 改成 `yue`。
-3. 重启语音服务。
-4. 切到「阿粵」角色，讲粵語。
+---
 
-**这是服务级的开关**：整个语音服务一次只认一种话。切到 `yue` 之后，普通话 ASR 就不灵
-了，直到你切回 `zh` 再重启。所以这不是「按角色切语言」，是「整台机器切语言」。要做按
-角色运行时切换，得改 Realtime 协议——`session.update` 现在只带 `voice` 和
-`instructions`，没有语言的槽（见 [07](07-voice-library.md) 一、里的 bug 描述）——超出
-了这次实验的范围。
-
-## 四、给后续语种留的路
-
-这次故意没把粵語写成特例，机制是通用的。加一个新语种（比如日语、韩语）照这三步：
-
-1. **ASR**：把 `asr_language` 改成对应的 Whisper 语言码（`ja` / `ko` / ……，Whisper 覆
-   盖约 99 种），重启。
-2. **音色包**：在 `config/voices.json` 加一条，带 `language` 字段，参考音频放
-   `assets/voices/`。`language` 让「重新识别」用对语言转写——这是这次顺手修的一个隐藏
-   bug：原来参考音频识别处处写死 `"zh"`（`server/server.py` 的 `_retranscribe_voicepack`
-   和 `_post_transcribe`），粵語音频会被当普通话转写。现在音色包带 `language`，按包自己
-   的语言转。
-3. **角色**：加一个角色，`system_prompt` 用目标语言的口语写。
-
-边界要讲清楚：
-
-- **ASR** 基本随便扩——Whisper 支持的都能接。
-- **TTS** 受 Qwen3-TTS 限制：官方 10 种语言（中＝普通话、英、日、韩、德、法、俄、葡、
-  西、意）之外的，靠「换字符集读出方言」这种社区技巧，不保证。粵語就属于这一类。真要
-  高质量粵語，得换 Qwen3-TTS-Flash 方言版，或上社区的粵語 finetune——那是**换模型**，
-  issue #5 明确不让做，留作未来工作。
-
-## 五、验证（给 GPU 主机；本机跑不了）
-
-本机是 GPU-less WSL，语音流水线起不来，下面是交接清单，不是已完成的验证。
-
-1. `asr_language=yue`、放好 `cantonese.wav`、切「阿粵」、重启语音服务。
-2. 讲粵語，看 `var/logs/voice.log`：
-   - ASR 转出的是粵語文本（不是被普通话硬套）；
-   - 大模型回的是繁体粵語口语；
-   - TTS 合成听起来是粵語发音，不是普通话。
-3. 确认单次识别补丁还在生效：日志里**不**再出现
-   `Whisper detected unsupported language:`（见 [07](07-voice-library.md) 五）。
-4. 听感不像粵語：这就是「实验性」的待解项，记下现象；候选解法（Flash 方言版 / 粵語
-   finetune）见上面第四节，属换模型、超范围。
-
-本机能做的核对（已做）：四个改过的 JSON 都能解析；面板 `:8900/api/characters` 含「阿
-粵」、`/api/voicepacks` 含 `v-cantonese` 且 `language=yue`；`supervisor.py` 的
-`expand()` 能把 `{asr_language}` 替换掉（`vars` 和 `vars_posix` 都定义了它）。
+（issue #5 把 Qwen3-TTS#141 描述成「含可下载粵語 WAV」——查证下来 #141 已关闭、无样本；
+有用的只是那句繁體技巧，而它在 base 上经实测无效。）
