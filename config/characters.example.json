@@ -66,8 +66,31 @@
           "offsetY": 0
         }
       }
+    },
+    "ahyue": {
+      "label": "阿粵",
+      "subtitle": "粵語 · 實驗性（需自備錄音 + asr_language 改 yue）",
+      "voice": "assets/voices/cantonese.wav",
+      "ref_text": "",
+      "emotion": "relaxed",
+      "system_prompt": "你叫阿粵。你用粵語（廣東話）同人傾偈，語氣親切自然，似同熟朋友講嘢。\n\n講嘢規則（必須嚴格遵守）：\n一、每次回覆唔好超過兩句，總共唔好超過四十個字。\n二、用粵語口語，用繁體字寫。唔好用書面語，禁止 markdown、列表、編號。\n三、禁止輸出任何 emoji、顏文字、括號裏嘅動作描寫。\n四、唔好重複我嘅問題，直接回應。\n五、數字用中文寫，講三點唔好寫 3 點，否則語音合成會讀錯。",
+      "avatar": {
+        "type": "orb",
+        "vrm": "",
+        "idle_video": "",
+        "talk_video": "",
+        "live2d": "",
+        "avatar_id": "",
+        "motion": "",
+        "view": {
+          "zoom": 1,
+          "offsetY": 0
+        }
+      },
+      "voice_id": "v-cantonese"
     }
   },
+  "_note_cantonese": "ahyue 是实验性粵語角色，演示怎么加一个非普通话语种（完整流程见 docs/09-cantonese.md）。三件事缺一不可：用 v-cantonese 音色包（需自备 assets/voices/cantonese.wav）、system_prompt 写成繁体粵語口语（粵語发音由大模型回繁体粵語带出来，不是由参考音频决定）、把 scripts/services.json 的 asr_language 从 zh 改成 yue 并重启语音服务。基座 Qwen3-TTS 对粵語的支持未经本机验证，属实验性。",
   "_note_avatar": "avatar.type 决定这个角色怎么显示：orb 是抽象声纹圆环，vrm 是 3D 模型，live2d 是 2D 模型，video 是真人循环视频，musetalk 是真人加生成口型。三个示例角色都用 orb，因为它不需要任何素材。换成别的类型要自己准备 assets/ 下的模型或视频，见 docs/03-user-guide.md。",
   "_note_musetalk": "musetalk 类型下 talk_video 是「用来建口型的素材」：FlashHead 后端要一张高分辨率静态图（越清楚越好，1024 起步），MuseTalk 后端要一段视频。idle_video 是两边都要的待机循环片段，FlashHead 还用它来对齐取景。两者必须是同一个人同一套衣服场景。"
 }

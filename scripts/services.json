@@ -25,7 +25,8 @@
     "tts_model": "{root}\\runtime\\models\\qwen3-tts-base",
     "ref_audio": "{root}\\assets\\voices\\default.wav",
     "ref_text": "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes.",
-    "no_proxy": "127.0.0.1,localhost,::1"
+    "no_proxy": "127.0.0.1,localhost,::1",
+    "asr_language": "zh"
   },
   "vars_posix": {
     "python_s2s": "{root}/runtime/python/s2s/bin/python",
@@ -34,7 +35,8 @@
     "bin_dir": "{root}/runtime/bin",
     "path_sep": ":",
     "tts_model": "{root}/runtime/models/qwen3-tts-base",
-    "ref_audio": "{root}/assets/voices/default.wav"
+    "ref_audio": "{root}/assets/voices/default.wav",
+    "asr_language": "zh"
   },
   "services": [
     {
@@ -97,6 +99,7 @@
       "_note_launcher": "不直接跑 speech_to_speech.s2s_pipeline，而是走 services\\voice\\launcher.py。它给上游打两个补丁。第二个是让 whisper 每句只识别一遍——库里那段「读一下刚才是哪国话」的代码在这个 transformers 版本上永远读空，于是每句都白白重新生成一遍，一句话多等 50 到 130 毫秒，细节见 docs/07-voice-library.md 四点六。第一个是：切换角色时让参考文本跟着参考音频一起换。Realtime 协议的 session 里只有 voice 一个字段放得下音频路径，放不下这段音频的逐字稿，所以库那边换了音频、文本还留在启动参数上——每个非默认角色都在用「别人的声音配别人的话」克隆。配对关系在 config\\voices.json 里，按路径查得回来。补丁写在我们自己的仓库里，重装依赖不会丢。",
       "_note_ref_text": "ref_text 是兜底：launcher 认得出 ref_audio 时会用 voices.json 里配对的那条覆盖它。两者不一致时以 voices.json 为准，因为音色库改文本不会回头改这里。",
       "_note_icl": "克隆模式的取舍，改过两次，把经过记清楚。xvec_only 只用说话人向量、完全忽略参考文本，官方写的是「效果有限」；不开则走 ICL，把参考音频当上文续写，音色更像。一度关掉它改走 ICL，因为当时参考文本对不上、ICL 用不了；文本修好后 ICL 确实更像。但后来发现 ICL 有一个没考虑到的代价：每一轮都是一次新的续写，所以轮次之间音色会飘。实测同一句话各合四遍，离散度 ICL 7.87 对 xvec_only 3.48，两个句子上都成立。降采样温度压不住它（0.9/0.7/0.5/0.3 → 4.98/7.26/6.70/6.59，无下降趋势），因为随机的不是采样而是续写本身。现在开着 xvec_only：拿相似度换一致性。觉得不像就把命令行里那一行删掉换回 ICL，但飘会回来。",
+      "_note_language": "--language 钉死 Whisper 识别哪种话，默认 zh（普通话）。粵語改成 yue（large-v3-turbo 带这个语言码），别的语种填对应的 Whisper 语言码即可。launcher 的单次识别补丁（docs/07 四点六）对任何被钉死的码都仍生效。切换是服务级的：整个语音服务只识别这一种话，普通话在切回前不可用，改完要重启语音服务才读新值。新增一个语种的完整流程见 docs/09-cantonese.md。",
       "depends_on": [
         "panel"
       ],
@@ -114,7 +117,7 @@
         "--stt_model_name",
         "openai/whisper-large-v3-turbo",
         "--language",
-        "zh",
+        "{asr_language}",
         "--llm_backend",
         "chat-completions",
         "--model_name",

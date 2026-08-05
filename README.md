@@ -12,6 +12,9 @@
    └──────────── 随时插话打断 ────────────    浏览器渲染 + FlashHead 口型
 ```
 
+> 想试粵語？粵語 ASR + TTS 是**实验性**支持：改一个配置、自备一段粵語录音就能开，整套
+> 流程和已知限制见 [`docs/09-cantonese.md`](docs/09-cantonese.md)。
+
 ## 预置 VRM 形象
 
 mate 用 VRM 模型当角色的 3D 形象。安装时加 `--curated-avatars`（PowerShell 用
